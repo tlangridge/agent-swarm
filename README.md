@@ -43,14 +43,18 @@ npm install
 
 ### Configure
 
-Create a `.env` file in the project root:
+Copy the example env file and fill in your keys:
 
-```env
-PORT=3000
-AGENTMAIL_API_KEY=your_key_here  # optional — agents work without it
+```bash
+cp .env.example .env
 ```
 
-The AgentMail API key enables automatic email provisioning for agents. Without it, agents are created without email addresses.
+You'll want an [AgentMail](https://agentmail.to) API key to get the most out of Agent Swarm. It gives each agent a unique email address, enabling them to send and receive email autonomously. Without it, agents still work but have no email identity.
+
+| Variable | Required | Description |
+|---|---|---|
+| `AGENTMAIL_API_KEY` | Recommended | API key from [AgentMail](https://agentmail.to) for agent email provisioning |
+| `PORT` | No | Server port (default: `3000`) |
 
 ### Run
 
