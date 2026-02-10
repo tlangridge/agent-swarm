@@ -4,6 +4,8 @@ import type { AgentIdentity } from '../types';
 export function useAgents() {
   const [agents, setAgents] = useState<AgentIdentity[]>([]);
   const [agentmailConfigured, setAgentmailConfigured] = useState(false);
+  const [dockerAvailable, setDockerAvailable] = useState(false);
+  const [dockerImageBuilt, setDockerImageBuilt] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchAgents = useCallback(async () => {
@@ -12,6 +14,8 @@ export function useAgents() {
       const data = await res.json();
       setAgents(data.agents);
       setAgentmailConfigured(data.agentmailConfigured);
+      setDockerAvailable(data.dockerAvailable ?? false);
+      setDockerImageBuilt(data.dockerImageBuilt ?? false);
     } catch (err) {
       console.error('Failed to fetch agents:', err);
     } finally {
@@ -49,5 +53,5 @@ export function useAgents() {
     }
   }, []);
 
-  return { agents, agentmailConfigured, loading, createAgent, deleteAgent: deleteAgentById, refresh: fetchAgents };
+  return { agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, loading, createAgent, deleteAgent: deleteAgentById, refresh: fetchAgents };
 }

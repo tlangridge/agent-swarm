@@ -1,8 +1,11 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import { execSync } from 'child_process';
+import { mkdirSync } from 'fs';
+import path from 'path';
 
 export type CliType = 'bash' | 'claude' | 'gemini' | 'codex' | 'opencode';
+export type ExecutionMode = 'local' | 'docker';
 
 export interface PtySession {
   id: string;
@@ -10,6 +13,8 @@ export interface PtySession {
   agentName: string | null;
   agentEmail: string | null;
   cliType: CliType;
+  executionMode: ExecutionMode;
+  containerName: string | null;
   pty: IPty;
   cols: number;
   rows: number;
@@ -63,9 +68,14 @@ function resolveCliPath(cliType: CliType): string {
   return cliType;
 }
 
-function getCliArgs(cliType: CliType, agent?: { name: string; email: string } | null): string[] {
+export type PermissionMode = 'autonomous' | 'regular';
+
+function getCliArgs(cliType: CliType, agent?: { name: string; email: string } | null, permissionMode: PermissionMode = 'autonomous'): string[] {
   if (cliType === 'claude') {
-    const args = ['--dangerously-skip-permissions'];
+    const args: string[] = [];
+    if (permissionMode === 'autonomous') {
+      args.push('--dangerously-skip-permissions');
+    }
     if (agent) {
       args.push(
         '--append-system-prompt',
@@ -83,9 +93,15 @@ export function spawnSession(
   cols: number,
   rows: number,
   agent?: { id: string; name: string; email: string } | null,
+  executionMode: ExecutionMode = 'local',
+  permissionMode: PermissionMode = 'autonomous',
 ): PtySession {
+  if (executionMode === 'docker') {
+    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode);
+  }
+
   const shell = resolveCliPath(cliType);
-  const args = getCliArgs(cliType, agent);
+  const args = getCliArgs(cliType, agent, permissionMode);
 
   // Build env with full PATH from login shell
   const env: Record<string, string> = { ...process.env as Record<string, string> };
@@ -122,6 +138,109 @@ export function spawnSession(
     agentName: agent?.name ?? null,
     agentEmail: agent?.email ?? null,
     cliType,
+    executionMode: 'local',
+    containerName: null,
+    pty: ptyProcess,
+    cols,
+    rows,
+    createdAt: new Date(),
+  };
+
+  sessions.set(id, session);
+  return session;
+}
+
+function getDockerCliCommand(cliType: CliType, permissionMode: PermissionMode = 'autonomous'): { cmd: string; args: string[] } {
+  switch (cliType) {
+    case 'claude': return { cmd: 'claude', args: permissionMode === 'autonomous' ? ['--dangerously-skip-permissions'] : [] };
+    case 'gemini': return { cmd: 'gemini', args: [] };
+    case 'codex': return { cmd: 'codex', args: [] };
+    case 'opencode': return { cmd: 'opencode', args: [] };
+    case 'bash': return { cmd: '/bin/bash', args: [] };
+  }
+}
+
+// Base directory for persistent Docker volumes
+const DOCKER_DATA_DIR = path.join(process.cwd(), 'data', 'docker');
+
+function ensureDockerVolumeDirs(agentId: string | null): { configDir: string; workspaceDir: string } {
+  const key = agentId || '_anonymous';
+  const configDir = path.join(DOCKER_DATA_DIR, key, 'config');
+  const workspaceDir = path.join(DOCKER_DATA_DIR, key, 'workspace');
+  mkdirSync(configDir, { recursive: true });
+  mkdirSync(workspaceDir, { recursive: true });
+  return { configDir, workspaceDir };
+}
+
+function spawnDockerSession(
+  id: string,
+  cliType: CliType,
+  cols: number,
+  rows: number,
+  agent?: { id: string; name: string; email: string } | null,
+  permissionMode: PermissionMode = 'autonomous',
+): PtySession {
+  const containerName = `agent-swarm-${id.slice(0, 8)}`;
+  const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode);
+  const { configDir, workspaceDir } = ensureDockerVolumeDirs(agent?.id ?? null);
+
+  const dockerArgs = [
+    'run', '-it', '--rm',
+    '--name', containerName,
+    '--memory=1g', '--cpus=1',
+    // Persistent volumes — config survives across sessions
+    '-v', `${configDir}/claude:/home/agent/.claude`,
+    '-v', `${configDir}/gemini:/home/agent/.gemini`,
+    '-v', `${configDir}/codex:/home/agent/.codex`,
+    '-v', `${workspaceDir}:/home/agent/workspace`,
+  ];
+
+  // Pass API keys as env vars
+  const envKeys = [
+    'ANTHROPIC_API_KEY',
+    'GOOGLE_API_KEY',
+    'GEMINI_API_KEY',
+    'OPENAI_API_KEY',
+  ];
+  for (const key of envKeys) {
+    if (process.env[key]) {
+      dockerArgs.push('-e', `${key}=${process.env[key]}`);
+    }
+  }
+
+  // Agent identity env vars
+  if (agent) {
+    dockerArgs.push('-e', `AGENT_SWARM_AGENT_ID=${agent.id}`);
+    dockerArgs.push('-e', `AGENT_SWARM_AGENT_NAME=${agent.name}`);
+    dockerArgs.push('-e', `AGENT_SWARM_AGENT_EMAIL=${agent.email}`);
+  }
+
+  // Add agent identity to Claude's system prompt inside container
+  if (cliType === 'claude' && agent) {
+    cliArgs.push(
+      '--append-system-prompt',
+      `Your identity: Name="${agent.name}", Email="${agent.email}". Use this identity when collaborating with other agents or signing up for services.`,
+    );
+  }
+
+  dockerArgs.push('agent-swarm-sandbox:latest', cmd, ...cliArgs);
+
+  const ptyProcess = pty.spawn('docker', dockerArgs, {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd: '/tmp',
+    env: process.env as Record<string, string>,
+  });
+
+  const session: PtySession = {
+    id,
+    agentId: agent?.id ?? null,
+    agentName: agent?.name ?? null,
+    agentEmail: agent?.email ?? null,
+    cliType,
+    executionMode: 'docker',
+    containerName,
     pty: ptyProcess,
     cols,
     rows,
@@ -146,6 +265,10 @@ export function killSession(sessionId: string): void {
   if (session) {
     try { session.pty.kill(); } catch { /* already dead */ }
     try { process.kill(session.pty.pid, 'SIGKILL'); } catch { /* already dead */ }
+    // Force-remove Docker container as a safety net
+    if (session.containerName) {
+      try { execSync(`docker rm -f ${session.containerName}`, { stdio: 'ignore', timeout: 5000 }); } catch { /* already gone */ }
+    }
     sessions.delete(sessionId);
   }
 }
@@ -154,6 +277,9 @@ export function killAll(): void {
   for (const [, session] of sessions) {
     try { session.pty.kill(); } catch { /* already dead */ }
     try { process.kill(session.pty.pid, 'SIGKILL'); } catch { /* already dead */ }
+    if (session.containerName) {
+      try { execSync(`docker rm -f ${session.containerName}`, { stdio: 'ignore', timeout: 5000 }); } catch { /* already gone */ }
+    }
   }
   sessions.clear();
 }

@@ -4,22 +4,24 @@ import type { MosaicNode, MosaicBranch } from 'react-mosaic-component';
 import 'react-mosaic-component/react-mosaic-component.css';
 import Header from './components/Header';
 import AgentPicker from './components/AgentPicker';
+import SettingsDialog from './components/SettingsDialog';
 import TerminalWindow from './components/TerminalWindow';
 import BroadcastBar from './components/BroadcastBar';
 import { useAgents } from './hooks/useAgents';
-import type { TerminalSession, CliType, AgentIdentity, ServerMessage } from './types';
+import type { TerminalSession, CliType, ExecutionMode, PermissionMode, AgentIdentity, ServerMessage } from './types';
 
 export default function App() {
   const [sessions, setSessions] = useState<Map<string, TerminalSession>>(new Map());
   const [layout, setLayout] = useState<MosaicNode<string> | null>(null);
   const [showPicker, setShowPicker] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [connected, setConnected] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const writersRef = useRef<Map<string, (data: string) => void>>(new Map());
-  const pendingCreatesRef = useRef<Map<string, { agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType }>>(new Map());
+  const pendingCreatesRef = useRef<Map<string, { agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode }>>(new Map());
 
-  const { agents, agentmailConfigured, createAgent } = useAgents();
+  const { agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, createAgent, refresh } = useAgents();
 
   // WebSocket connection
   useEffect(() => {
@@ -39,9 +41,10 @@ export default function App() {
 
         switch (msg.type) {
           case 'created': {
-            const pending = pendingCreatesRef.current.get(msg.sessionId);
-            if (pending) {
-              pendingCreatesRef.current.delete(msg.sessionId);
+            const requestId = msg.requestId;
+            const pending = requestId ? pendingCreatesRef.current.get(requestId) : undefined;
+            if (pending && requestId) {
+              pendingCreatesRef.current.delete(requestId);
             }
             const session: TerminalSession = {
               id: msg.sessionId,
@@ -49,6 +52,7 @@ export default function App() {
               agentName: pending?.agentName ?? null,
               agentEmail: pending?.agentEmail ?? null,
               cliType: msg.cliType,
+              executionMode: pending?.executionMode ?? 'local',
             };
             setSessions(prev => {
               const next = new Map(prev);
@@ -94,7 +98,7 @@ export default function App() {
     }
   }, []);
 
-  const handleAddTerminal = useCallback((agent: AgentIdentity | null, cliType: CliType) => {
+  const handleAddTerminal = useCallback((agent: AgentIdentity | null, cliType: CliType, executionMode: ExecutionMode = 'local', permissionMode: PermissionMode = 'autonomous') => {
     setShowPicker(false);
 
     // We generate a temporary ID to track the create request
@@ -106,14 +110,18 @@ export default function App() {
       agentName: agent?.name ?? null,
       agentEmail: agent?.email ?? null,
       cliType,
+      executionMode,
     });
 
     sendWs({
       type: 'create',
+      requestId: tempId,
       agentId: agent?.id,
       agentName: agent?.name,
       agentEmail: agent?.email,
       cliType,
+      executionMode,
+      permissionMode,
       cols: 80,
       rows: 24,
     });
@@ -154,12 +162,24 @@ export default function App() {
     }
   }, [sessions, sendWs]);
 
+  const handleBuildDockerImage = useCallback(async () => {
+    try {
+      const res = await fetch('/api/docker/build', { method: 'POST' });
+      // Wait for the full streamed response to complete
+      await res.text();
+      refresh();
+    } catch (err) {
+      console.error('Docker build failed:', err);
+    }
+  }, [refresh]);
+
   const getTitle = useCallback((id: string): string => {
     const session = sessions.get(id);
     if (!session) return id;
     const cli = session.cliType.charAt(0).toUpperCase() + session.cliType.slice(1);
-    if (session.agentName) return `${cli} — ${session.agentName}${session.agentEmail ? ` (${session.agentEmail})` : ''}`;
-    return cli;
+    const modeTag = session.executionMode === 'docker' ? ' [Docker]' : '';
+    if (session.agentName) return `${cli}${modeTag} — ${session.agentName}${session.agentEmail ? ` (${session.agentEmail})` : ''}`;
+    return `${cli}${modeTag}`;
   }, [sessions]);
 
   const renderTile = useCallback((id: string, path: MosaicBranch[]) => {
@@ -193,6 +213,7 @@ export default function App() {
         sessionCount={sessions.size}
         connected={connected}
         onAddTerminal={() => setShowPicker(true)}
+        onOpenSettings={() => setShowSettings(true)}
       />
 
       <div className="workspace">
@@ -219,9 +240,21 @@ export default function App() {
         <AgentPicker
           agents={agents}
           agentmailConfigured={agentmailConfigured}
+          dockerAvailable={dockerAvailable}
+          dockerImageBuilt={dockerImageBuilt}
           onSelect={handleAddTerminal}
           onCreateAgent={createAgent}
+          onBuildDockerImage={handleBuildDockerImage}
           onClose={() => setShowPicker(false)}
+        />
+      )}
+
+      {showSettings && (
+        <SettingsDialog
+          dockerAvailable={dockerAvailable}
+          dockerImageBuilt={dockerImageBuilt}
+          onBuildDockerImage={handleBuildDockerImage}
+          onClose={() => setShowSettings(false)}
         />
       )}
     </div>

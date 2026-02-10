@@ -2,12 +2,13 @@ import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import { listAgents, getAgent, saveAgent, deleteAgent } from '../services/agent-store.js';
 import { provisionInbox, deleteInbox, isConfigured } from '../services/agentmail.js';
+import { isDockerAvailable, isImageBuilt } from '../docker-builder.js';
 
 export const agentRoutes = Router();
 
 agentRoutes.get('/', async (_req, res) => {
   const agents = await listAgents();
-  res.json({ agents, agentmailConfigured: isConfigured() });
+  res.json({ agents, agentmailConfigured: isConfigured(), dockerAvailable: isDockerAvailable(), dockerImageBuilt: isImageBuilt() });
 });
 
 agentRoutes.get('/:id', async (req, res) => {

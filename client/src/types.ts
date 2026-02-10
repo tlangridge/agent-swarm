@@ -1,4 +1,6 @@
 export type CliType = 'bash' | 'claude' | 'gemini' | 'codex' | 'opencode';
+export type ExecutionMode = 'local' | 'docker';
+export type PermissionMode = 'autonomous' | 'regular';
 
 export interface AgentIdentity {
   id: string;
@@ -17,15 +19,19 @@ export interface TerminalSession {
   agentName: string | null;
   agentEmail: string | null;
   cliType: CliType;
+  executionMode: ExecutionMode;
 }
 
 // WebSocket messages
 export interface WsCreateMsg {
   type: 'create';
+  requestId?: string;
   agentId?: string;
   agentName?: string;
   agentEmail?: string;
   cliType: CliType;
+  executionMode?: ExecutionMode;
+  permissionMode?: PermissionMode;
   cols: number;
   rows: number;
 }
@@ -50,7 +56,7 @@ export interface WsKillMsg {
 
 export type ClientMessage = WsCreateMsg | WsInputMsg | WsResizeMsg | WsKillMsg;
 
-export interface WsCreatedMsg { type: 'created'; sessionId: string; agentId: string | null; cliType: CliType }
+export interface WsCreatedMsg { type: 'created'; sessionId: string; requestId?: string; agentId: string | null; cliType: CliType }
 export interface WsOutputMsg { type: 'output'; sessionId: string; data: string }
 export interface WsExitedMsg { type: 'exited'; sessionId: string; exitCode: number }
 export interface WsErrorMsg { type: 'error'; message: string }

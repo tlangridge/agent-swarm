@@ -1,6 +1,10 @@
 /* Reset & base */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; width: 100%; overflow: hidden; }
+
+/* Hide scrollbars globally */
+*::-webkit-scrollbar { display: none; }
+* { -ms-overflow-style: none; scrollbar-width: none; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: #0f0f14;
@@ -293,3 +297,66 @@ body {
 }
 .broadcast-send-btn:hover { background: #c4a7f7; }
 .broadcast-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Settings button (header gear icon) */
+.settings-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: none;
+  border: 1px solid #292e42;
+  border-radius: 6px;
+  color: #565f89;
+  cursor: pointer;
+}
+.settings-btn:hover { border-color: #565f89; color: #c0caf5; }
+
+/* Settings dialog */
+.settings-modal { width: 400px; }
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #c0caf5;
+  margin-bottom: 12px;
+}
+.settings-docker-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #a9b1d6;
+  margin-bottom: 10px;
+}
+.settings-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.settings-status-unavailable { background: #f7768e; }
+.settings-status-pending { background: #e0af68; }
+.settings-status-ready { background: #9ece6a; }
+.settings-description {
+  font-size: 12px;
+  color: #565f89;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+.settings-install-options {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.settings-install-divider { color: #565f89; }
+.settings-code {
+  font-family: Menlo, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  background: #16161e;
+  color: #a9b1d6;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #292e42;
+}

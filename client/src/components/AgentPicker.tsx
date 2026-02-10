@@ -1,12 +1,15 @@
 import { useState } from 'react';
-import type { AgentIdentity, CliType } from '../types';
+import type { AgentIdentity, CliType, ExecutionMode, PermissionMode } from '../types';
 import CreateAgentForm from './CreateAgentForm';
 
 interface AgentPickerProps {
   agents: AgentIdentity[];
   agentmailConfigured: boolean;
-  onSelect: (agent: AgentIdentity | null, cliType: CliType) => void;
+  dockerAvailable: boolean;
+  dockerImageBuilt: boolean;
+  onSelect: (agent: AgentIdentity | null, cliType: CliType, executionMode: ExecutionMode, permissionMode: PermissionMode) => void;
   onCreateAgent: (name: string, defaultCliType: string) => Promise<AgentIdentity | null>;
+  onBuildDockerImage?: () => Promise<void>;
   onClose: () => void;
 }
 
@@ -17,17 +20,20 @@ const CLI_OPTIONS: { value: CliType; label: string }[] = [
   { value: 'bash', label: 'Bash Shell' },
 ];
 
-export default function AgentPicker({ agents, agentmailConfigured, onSelect, onCreateAgent, onClose }: AgentPickerProps) {
+export default function AgentPicker({ agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, onSelect, onCreateAgent, onBuildDockerImage, onClose }: AgentPickerProps) {
   const [mode, setMode] = useState<'pick' | 'create'>('pick');
   const [selectedCli, setSelectedCli] = useState<CliType>('claude');
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>('local');
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('autonomous');
   const [creating, setCreating] = useState(false);
+  const [building, setBuilding] = useState(false);
 
   const handleSelectAgent = (agent: AgentIdentity) => {
-    onSelect(agent, selectedCli);
+    onSelect(agent, selectedCli, executionMode, permissionMode);
   };
 
   const handleQuickLaunch = () => {
-    onSelect(null, selectedCli);
+    onSelect(null, selectedCli, executionMode, permissionMode);
   };
 
   const handleCreate = async (name: string, defaultCliType: string) => {
@@ -35,7 +41,7 @@ export default function AgentPicker({ agents, agentmailConfigured, onSelect, onC
     const agent = await onCreateAgent(name, defaultCliType);
     setCreating(false);
     if (agent) {
-      onSelect(agent, defaultCliType as CliType);
+      onSelect(agent, defaultCliType as CliType, executionMode, permissionMode);
     }
   };
 
@@ -64,6 +70,65 @@ export default function AgentPicker({ agents, agentmailConfigured, onSelect, onC
               </div>
             </div>
 
+            {dockerAvailable && (
+              <div className="cli-selector">
+                <label>Execution Mode:</label>
+                <div className="cli-options">
+                  <button
+                    className={`cli-option ${executionMode === 'local' ? 'active' : ''}`}
+                    onClick={() => setExecutionMode('local')}
+                  >
+                    Local
+                  </button>
+                  <button
+                    className={`cli-option ${executionMode === 'docker' ? 'active' : ''}`}
+                    onClick={() => setExecutionMode('docker')}
+                  >
+                    Docker
+                  </button>
+                </div>
+                {executionMode === 'docker' && building && (
+                  <div className="warning-text" style={{ marginTop: 8 }}>
+                    Building Docker image... (this may take a few minutes, check terminal for progress)
+                  </div>
+                )}
+                {executionMode === 'docker' && !building && !dockerImageBuilt && (
+                  <div className="warning-text" style={{ marginTop: 8 }}>
+                    Docker image not built yet.{' '}
+                    {onBuildDockerImage ? (
+                      <button className="text-btn" onClick={async () => {
+                        setBuilding(true);
+                        await onBuildDockerImage();
+                        setBuilding(false);
+                      }}>Build now</button>
+                    ) : (
+                      <span>Run: <code>docker build -t agent-swarm-sandbox docker/</code></span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedCli === 'claude' && (
+              <div className="cli-selector">
+                <label>Permission Mode:</label>
+                <div className="cli-options">
+                  <button
+                    className={`cli-option ${permissionMode === 'autonomous' ? 'active' : ''}`}
+                    onClick={() => setPermissionMode('autonomous')}
+                  >
+                    Autonomous
+                  </button>
+                  <button
+                    className={`cli-option ${permissionMode === 'regular' ? 'active' : ''}`}
+                    onClick={() => setPermissionMode('regular')}
+                  >
+                    Regular
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="agent-list-section">
               <div className="agent-list-header">
                 <span>Existing Agents</span>
@@ -89,9 +154,11 @@ export default function AgentPicker({ agents, agentmailConfigured, onSelect, onC
             </div>
 
             <div className="modal-footer">
-              <button className="secondary-btn" onClick={handleQuickLaunch}>
-                Launch Without Agent
-              </button>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button className="secondary-btn" onClick={handleQuickLaunch}>
+                  Launch Without Agent
+                </button>
+              </div>
             </div>
           </div>
         ) : (

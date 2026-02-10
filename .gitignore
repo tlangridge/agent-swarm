@@ -2,4 +2,5 @@ node_modules/
 client/dist/
 .env
 data/agents/
+data/docker/
 *.DS_Store

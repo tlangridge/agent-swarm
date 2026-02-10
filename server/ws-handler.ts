@@ -1,9 +1,10 @@
 import type { WebSocket } from 'ws';
 import { randomUUID } from 'crypto';
 import { spawnSession, resizeSession, killSession, sessions } from './pty-manager.js';
-import type { CliType } from './pty-manager.js';
+import type { CliType, ExecutionMode } from './pty-manager.js';
 
-interface CreateMsg { type: 'create'; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; cols: number; rows: number }
+type PermissionMode = 'autonomous' | 'regular';
+interface CreateMsg { type: 'create'; requestId?: string; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; executionMode?: ExecutionMode; permissionMode?: PermissionMode; cols: number; rows: number }
 interface InputMsg { type: 'input'; sessionId: string; data: string }
 interface ResizeMsg { type: 'resize'; sessionId: string; cols: number; rows: number }
 interface KillMsg { type: 'kill'; sessionId: string }
@@ -39,7 +40,7 @@ export function handleWebSocket(ws: WebSocket): void {
 
         let session;
         try {
-          session = spawnSession(sessionId, msg.cliType, msg.cols, msg.rows, agent);
+          session = spawnSession(sessionId, msg.cliType, msg.cols, msg.rows, agent, msg.executionMode, msg.permissionMode);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : 'Failed to spawn terminal';
           console.error(`PTY spawn failed for ${msg.cliType}:`, message);
@@ -59,7 +60,7 @@ export function handleWebSocket(ws: WebSocket): void {
           sessions.delete(sessionId);
         });
 
-        send(ws, { type: 'created', sessionId, agentId: msg.agentId || null, cliType: msg.cliType });
+        send(ws, { type: 'created', sessionId, requestId: msg.requestId, agentId: msg.agentId || null, cliType: msg.cliType });
         break;
       }
 
