@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AgentIdentity, CliType, ExecutionMode, PermissionMode } from '../types';
+import type { AgentIdentity, CliType, ExecutionMode, PermissionMode, SwarmRole } from '../types';
 import CreateAgentForm from './CreateAgentForm';
 
 interface AgentPickerProps {
@@ -7,7 +7,8 @@ interface AgentPickerProps {
   agentmailConfigured: boolean;
   dockerAvailable: boolean;
   dockerImageBuilt: boolean;
-  onSelect: (agent: AgentIdentity | null, cliType: CliType, executionMode: ExecutionMode, permissionMode: PermissionMode) => void;
+  leadSessionId: string | null;
+  onSelect: (agent: AgentIdentity | null, cliType: CliType, executionMode: ExecutionMode, permissionMode: PermissionMode, swarmRole: SwarmRole) => void;
   onCreateAgent: (name: string, defaultCliType: string) => Promise<AgentIdentity | null>;
   onBuildDockerImage?: () => Promise<void>;
   onClose: () => void;
@@ -20,20 +21,21 @@ const CLI_OPTIONS: { value: CliType; label: string }[] = [
   { value: 'bash', label: 'Bash Shell' },
 ];
 
-export default function AgentPicker({ agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, onSelect, onCreateAgent, onBuildDockerImage, onClose }: AgentPickerProps) {
+export default function AgentPicker({ agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, leadSessionId, onSelect, onCreateAgent, onBuildDockerImage, onClose }: AgentPickerProps) {
   const [mode, setMode] = useState<'pick' | 'create'>('pick');
   const [selectedCli, setSelectedCli] = useState<CliType>('claude');
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('local');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('autonomous');
+  const [swarmRole, setSwarmRole] = useState<SwarmRole>('worker');
   const [creating, setCreating] = useState(false);
   const [building, setBuilding] = useState(false);
 
   const handleSelectAgent = (agent: AgentIdentity) => {
-    onSelect(agent, selectedCli, executionMode, permissionMode);
+    onSelect(agent, selectedCli, executionMode, permissionMode, swarmRole);
   };
 
   const handleQuickLaunch = () => {
-    onSelect(null, selectedCli, executionMode, permissionMode);
+    onSelect(null, selectedCli, executionMode, permissionMode, swarmRole);
   };
 
   const handleCreate = async (name: string, defaultCliType: string) => {
@@ -41,7 +43,7 @@ export default function AgentPicker({ agents, agentmailConfigured, dockerAvailab
     const agent = await onCreateAgent(name, defaultCliType);
     setCreating(false);
     if (agent) {
-      onSelect(agent, defaultCliType as CliType, executionMode, permissionMode);
+      onSelect(agent, defaultCliType as CliType, executionMode, permissionMode, swarmRole);
     }
   };
 
@@ -128,6 +130,29 @@ export default function AgentPicker({ agents, agentmailConfigured, dockerAvailab
                 </div>
               </div>
             )}
+
+            <div className="cli-selector">
+              <label>Swarm Role:</label>
+              <div className="cli-options">
+                <button
+                  className={`cli-option ${swarmRole === 'worker' ? 'active' : ''}`}
+                  onClick={() => setSwarmRole('worker')}
+                >
+                  Worker
+                </button>
+                <button
+                  className={`cli-option ${swarmRole === 'lead' ? 'active' : ''}`}
+                  onClick={() => setSwarmRole('lead')}
+                >
+                  Lead
+                </button>
+              </div>
+              {swarmRole === 'lead' && leadSessionId && (
+                <div className="warning-text" style={{ marginTop: 8 }}>
+                  A lead agent already exists. Launching as lead will demote the current lead to worker.
+                </div>
+              )}
+            </div>
 
             <div className="agent-list-section">
               <div className="agent-list-header">

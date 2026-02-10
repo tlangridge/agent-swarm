@@ -1,8 +1,12 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import { execSync } from 'child_process';
-import { mkdirSync } from 'fs';
+import { mkdirSync, existsSync, copyFileSync, readdirSync } from 'fs';
 import path from 'path';
+import type { SwarmRole } from './services/swarm-registry.js';
+import { buildSwarmPrompt } from './services/swarm-prompts.js';
+
+export const PORT = parseInt(process.env.PORT || '3000', 10);
 
 export type CliType = 'bash' | 'claude' | 'gemini' | 'codex' | 'opencode';
 export type ExecutionMode = 'local' | 'docker';
@@ -70,13 +74,23 @@ function resolveCliPath(cliType: CliType): string {
 
 export type PermissionMode = 'autonomous' | 'regular';
 
-function getCliArgs(cliType: CliType, agent?: { name: string; email: string } | null, permissionMode: PermissionMode = 'autonomous'): string[] {
+function getCliArgs(
+  cliType: CliType,
+  agent?: { name: string; email: string } | null,
+  permissionMode: PermissionMode = 'autonomous',
+  swarmRole: SwarmRole = 'worker',
+  sessionId?: string,
+  swarmApiUrl?: string,
+): string[] {
   if (cliType === 'claude') {
     const args: string[] = [];
     if (permissionMode === 'autonomous') {
       args.push('--dangerously-skip-permissions');
     }
-    if (agent) {
+    if (agent && sessionId && swarmApiUrl) {
+      const prompt = buildSwarmPrompt(swarmRole, agent, sessionId, swarmApiUrl);
+      args.push('--append-system-prompt', prompt);
+    } else if (agent) {
       args.push(
         '--append-system-prompt',
         `Your identity: Name="${agent.name}", Email="${agent.email}". Use this identity when collaborating with other agents or signing up for services.`,
@@ -95,13 +109,15 @@ export function spawnSession(
   agent?: { id: string; name: string; email: string } | null,
   executionMode: ExecutionMode = 'local',
   permissionMode: PermissionMode = 'autonomous',
+  swarmRole: SwarmRole = 'worker',
 ): PtySession {
   if (executionMode === 'docker') {
-    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode);
+    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole);
   }
 
+  const swarmApiUrl = `http://localhost:${PORT}`;
   const shell = resolveCliPath(cliType);
-  const args = getCliArgs(cliType, agent, permissionMode);
+  const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl);
 
   // Build env with full PATH from login shell
   const env: Record<string, string> = { ...process.env as Record<string, string> };
@@ -117,6 +133,11 @@ export function spawnSession(
   if (missingPaths.length > 0) {
     env.PATH = [...missingPaths, currentPath].join(':');
   }
+
+  // Swarm env vars
+  env.AGENT_SWARM_SESSION_ID = id;
+  env.SWARM_API_URL = swarmApiUrl;
+  env.AGENT_SWARM_ROLE = swarmRole;
 
   if (agent) {
     env.AGENT_SWARM_AGENT_ID = agent.id;
@@ -163,6 +184,31 @@ function getDockerCliCommand(cliType: CliType, permissionMode: PermissionMode = 
 // Base directory for persistent Docker volumes
 const DOCKER_DATA_DIR = path.join(process.cwd(), 'data', 'docker');
 
+function seedCredentials(configDir: string): void {
+  const claudeDir = path.join(configDir, 'claude');
+  const credFile = path.join(claudeDir, '.credentials.json');
+
+  // Already has credentials — nothing to do
+  if (existsSync(credFile)) return;
+
+  // Scan other agents for an existing .credentials.json
+  try {
+    const entries = readdirSync(DOCKER_DATA_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(DOCKER_DATA_DIR, entry.name, 'config', 'claude', '.credentials.json');
+      if (existsSync(candidate)) {
+        mkdirSync(claudeDir, { recursive: true });
+        copyFileSync(candidate, credFile);
+        console.log(`Seeded Claude credentials for ${path.basename(configDir)} from ${entry.name}`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('seedCredentials: failed to seed credentials:', err);
+  }
+}
+
 function ensureDockerVolumeDirs(agentId: string | null): { configDir: string; workspaceDir: string } {
   const key = agentId || '_anonymous';
   const configDir = path.join(DOCKER_DATA_DIR, key, 'config');
@@ -179,10 +225,18 @@ function spawnDockerSession(
   rows: number,
   agent?: { id: string; name: string; email: string } | null,
   permissionMode: PermissionMode = 'autonomous',
+  swarmRole: SwarmRole = 'worker',
 ): PtySession {
   const containerName = `agent-swarm-${id.slice(0, 8)}`;
   const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode);
   const { configDir, workspaceDir } = ensureDockerVolumeDirs(agent?.id ?? null);
+
+  // Seed Claude credentials from an existing authenticated agent
+  if (cliType === 'claude') {
+    seedCredentials(configDir);
+  }
+
+  const swarmApiUrl = `http://host.docker.internal:${PORT}`;
 
   const dockerArgs = [
     'run', '-it', '--rm',
@@ -194,6 +248,11 @@ function spawnDockerSession(
     '-v', `${configDir}/codex:/home/agent/.codex`,
     '-v', `${workspaceDir}:/home/agent/workspace`,
   ];
+
+  // On Linux, host.docker.internal isn't provided by default
+  if (process.platform === 'linux') {
+    dockerArgs.push('--add-host=host.docker.internal:host-gateway');
+  }
 
   // Pass API keys as env vars
   const envKeys = [
@@ -208,6 +267,11 @@ function spawnDockerSession(
     }
   }
 
+  // Swarm env vars
+  dockerArgs.push('-e', `AGENT_SWARM_SESSION_ID=${id}`);
+  dockerArgs.push('-e', `SWARM_API_URL=${swarmApiUrl}`);
+  dockerArgs.push('-e', `AGENT_SWARM_ROLE=${swarmRole}`);
+
   // Agent identity env vars
   if (agent) {
     dockerArgs.push('-e', `AGENT_SWARM_AGENT_ID=${agent.id}`);
@@ -215,12 +279,10 @@ function spawnDockerSession(
     dockerArgs.push('-e', `AGENT_SWARM_AGENT_EMAIL=${agent.email}`);
   }
 
-  // Add agent identity to Claude's system prompt inside container
+  // Add swarm prompt to Claude's system prompt inside container
   if (cliType === 'claude' && agent) {
-    cliArgs.push(
-      '--append-system-prompt',
-      `Your identity: Name="${agent.name}", Email="${agent.email}". Use this identity when collaborating with other agents or signing up for services.`,
-    );
+    const prompt = buildSwarmPrompt(swarmRole, agent, id, swarmApiUrl);
+    cliArgs.push('--append-system-prompt', prompt);
   }
 
   dockerArgs.push('agent-swarm-sandbox:latest', cmd, ...cliArgs);

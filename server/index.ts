@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { handleWebSocket } from './ws-handler.js';
 import { agentRoutes } from './routes/agents.js';
+import { swarmRoutes } from './routes/swarm.js';
 import { killAll, validateCliTools } from './pty-manager.js';
 import { detectDocker, isDockerAvailable, isImageBuilt, buildImage } from './docker-builder.js';
 
@@ -12,8 +13,32 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
 const app = express();
-app.use(express.json());
+// Custom JSON parser that sanitizes Unicode smart quotes before parsing.
+// LLMs frequently emit curly quotes (\u201c \u201d \u2018 \u2019) in JSON,
+// which breaks standard JSON parsing.
+app.use((req, res, next) => {
+  if (!req.headers['content-type']?.includes('application/json')) {
+    return next();
+  }
+
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+  req.on('end', () => {
+    try {
+      let raw = Buffer.concat(chunks).toString('utf-8');
+      raw = raw
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'");
+      req.body = JSON.parse(raw);
+      next();
+    } catch {
+      res.status(400).json({ error: 'Invalid JSON' });
+    }
+  });
+  req.on('error', next);
+});
 app.use('/api/agents', agentRoutes);
+app.use('/api/swarm', swarmRoutes);
 
 // Docker status endpoint
 app.get('/api/docker/status', (_req, res) => {

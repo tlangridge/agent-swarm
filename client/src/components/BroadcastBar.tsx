@@ -1,18 +1,35 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+
+type BroadcastTarget = 'all' | 'lead';
 
 interface BroadcastBarProps {
   sessionCount: number;
+  leadSessionId: string | null;
+  leadAgentName: string | null;
   onBroadcast: (text: string) => void;
+  onSendToLead: (text: string) => void;
 }
 
-export default function BroadcastBar({ sessionCount, onBroadcast }: BroadcastBarProps) {
+export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentName, onBroadcast, onSendToLead }: BroadcastBarProps) {
   const [text, setText] = useState('');
+  const [target, setTarget] = useState<BroadcastTarget>(leadSessionId ? 'lead' : 'all');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Switch to 'all' if lead disappears while targeting lead
+  useEffect(() => {
+    if (!leadSessionId && target === 'lead') {
+      setTarget('all');
+    }
+  }, [leadSessionId, target]);
 
   const handleSend = () => {
     const trimmed = text.trim();
     if (!trimmed || sessionCount === 0) return;
-    onBroadcast(trimmed);
+    if (target === 'lead' && leadSessionId) {
+      onSendToLead(trimmed);
+    } else {
+      onBroadcast(trimmed);
+    }
     setText('');
     inputRef.current?.focus();
   };
@@ -24,10 +41,27 @@ export default function BroadcastBar({ sessionCount, onBroadcast }: BroadcastBar
     }
   };
 
+  const leadLabel = leadAgentName ? `Lead: ${leadAgentName}` : 'Lead';
+
   return (
     <div className="broadcast-bar">
-      <div className="broadcast-label">
-        Broadcast to all ({sessionCount})
+      <div className="broadcast-label-row">
+        <div className="broadcast-target-toggle">
+          <button
+            className={`broadcast-target-btn ${target === 'lead' ? 'active' : ''}`}
+            onClick={() => setTarget('lead')}
+            disabled={!leadSessionId}
+            title={leadSessionId ? `Send to ${leadAgentName || 'lead agent'}` : 'No lead agent designated'}
+          >
+            {leadLabel}
+          </button>
+          <button
+            className={`broadcast-target-btn ${target === 'all' ? 'active' : ''}`}
+            onClick={() => setTarget('all')}
+          >
+            All ({sessionCount})
+          </button>
+        </div>
       </div>
       <div className="broadcast-input-row">
         <textarea
@@ -36,7 +70,7 @@ export default function BroadcastBar({ sessionCount, onBroadcast }: BroadcastBar
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={sessionCount === 0 ? 'No active sessions...' : 'Type a message and press Enter to send to all agents...'}
+          placeholder={sessionCount === 0 ? 'No active sessions...' : target === 'lead' ? `Message ${leadAgentName || 'lead'}...` : 'Broadcast to all agents...'}
           disabled={sessionCount === 0}
           rows={1}
         />
@@ -45,7 +79,7 @@ export default function BroadcastBar({ sessionCount, onBroadcast }: BroadcastBar
           onClick={handleSend}
           disabled={!text.trim() || sessionCount === 0}
         >
-          Send All
+          {target === 'lead' ? 'Send' : 'Send All'}
         </button>
       </div>
     </div>
