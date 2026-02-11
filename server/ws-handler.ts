@@ -1,8 +1,8 @@
 import type { WebSocket } from 'ws';
 import { randomUUID } from 'crypto';
-import { spawnSession, resizeSession, killSession, sessions, PORT } from './pty-manager.js';
+import { spawnSession, resizeSession, killSession, sessions, PORT, MAX_SCROLLBACK } from './pty-manager.js';
 import type { CliType, ExecutionMode } from './pty-manager.js';
-import { addMember, removeMember, setRole, getMembers, getLeadSessionId, swarmEvents } from './services/swarm-registry.js';
+import { addMember, removeMember, setRole, getMembers, getLeadSessionId, getMember, swarmEvents } from './services/swarm-registry.js';
 import type { SwarmRole } from './services/swarm-registry.js';
 import { buildOrientationMessage } from './services/swarm-prompts.js';
 
@@ -40,6 +40,27 @@ swarmEvents.on('member:joined', broadcastSwarmUpdate);
 swarmEvents.on('member:left', broadcastSwarmUpdate);
 swarmEvents.on('member:role-changed', broadcastSwarmUpdate);
 
+// Notify agents via PTY when their role changes
+swarmEvents.on('member:role-changed', (member) => {
+  const session = sessions.get(member.sessionId);
+  if (!session) return;
+
+  const roleLabel = member.role === 'lead' ? 'LEAD' : 'WORKER';
+  const instruction = member.role === 'lead'
+    ? 'You are now the lead. Coordinate the swarm — check who is available with curl, delegate tasks, and synthesize results.'
+    : 'You are now a worker. Wait for instructions from the lead agent.';
+  const msg = `[SWARM SYSTEM]: Your role has changed to ${roleLabel}. ${instruction}`;
+  session.pty.write(msg);
+  setTimeout(() => session.pty.write('\r'), 100);
+});
+
+function accumScrollback(session: { scrollback: string }, data: string): void {
+  session.scrollback += data;
+  if (session.scrollback.length > MAX_SCROLLBACK) {
+    session.scrollback = session.scrollback.slice(-MAX_SCROLLBACK);
+  }
+}
+
 // Handle server-spawned sessions (from POST /api/swarm/spawn)
 // Route PTY output to all connected browser clients and notify them to create a tile
 swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole }) => {
@@ -51,8 +72,9 @@ swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, 
     send(client, { type: 'session:spawned', sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole });
   }
 
-  // Broadcast PTY output to all connected clients
+  // Broadcast PTY output to all connected clients + accumulate scrollback
   session.pty.onData((data: string) => {
+    accumScrollback(session, data);
     for (const client of connectedClients) {
       send(client, { type: 'output', sessionId, data });
     }
@@ -69,7 +91,30 @@ swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, 
 });
 
 export function handleWebSocket(ws: WebSocket): void {
-  const clientSessions = new Set<string>();
+  // Restore existing sessions before going live
+  for (const [sessionId, session] of sessions) {
+    const member = getMember(sessionId);
+    send(ws, {
+      type: 'session:restore',
+      sessionId,
+      agentId: session.agentId,
+      agentName: session.agentName,
+      agentEmail: session.agentEmail,
+      cliType: session.cliType,
+      executionMode: session.executionMode,
+      swarmRole: member?.role || 'worker',
+      scrollback: session.scrollback || undefined,
+    });
+  }
+
+  // Send current swarm state
+  send(ws, {
+    type: 'swarm:update',
+    members: getMembers(),
+    leadSessionId: getLeadSessionId(),
+  });
+
+  // NOW add to connectedClients — real-time output starts flowing
   connectedClients.add(ws);
 
   ws.on('message', (raw) => {
@@ -125,15 +170,17 @@ export function handleWebSocket(ws: WebSocket): void {
           }, 500);
         }
 
-        clientSessions.add(sessionId);
-
         session.pty.onData((data: string) => {
-          send(ws, { type: 'output', sessionId, data });
+          accumScrollback(session, data);
+          for (const client of connectedClients) {
+            send(client, { type: 'output', sessionId, data });
+          }
         });
 
         session.pty.onExit(({ exitCode }: { exitCode: number }) => {
-          send(ws, { type: 'exited', sessionId, exitCode });
-          clientSessions.delete(sessionId);
+          for (const client of connectedClients) {
+            send(client, { type: 'exited', sessionId, exitCode });
+          }
           sessions.delete(sessionId);
           removeMember(sessionId);
         });
@@ -157,7 +204,6 @@ export function handleWebSocket(ws: WebSocket): void {
 
       case 'kill': {
         killSession(msg.sessionId);
-        clientSessions.delete(msg.sessionId);
         removeMember(msg.sessionId);
         break;
       }
@@ -171,9 +217,5 @@ export function handleWebSocket(ws: WebSocket): void {
 
   ws.on('close', () => {
     connectedClients.delete(ws);
-    for (const sessionId of clientSessions) {
-      killSession(sessionId);
-      removeMember(sessionId);
-    }
   });
 }

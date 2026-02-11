@@ -29,7 +29,9 @@ AS LEAD AGENT:
 - Workers will message you back with results — watch for [SWARM from ...] messages
 - Report overall progress back to the user
 - If you need more agents, spawn them using the spawn API
-- You can spawn existing agents from the database or create new ones on the fly`;
+- You can spawn existing agents from the database or create new ones on the fly
+
+Note: Your role may change during the session. If you receive a [SWARM SYSTEM] message about a role change, adapt your behavior accordingly.`;
   }
 
   return `${identity}
@@ -44,7 +46,9 @@ AS A WORKER AGENT:
 - The lead agent will send you tasks via [SWARM from ...] messages
 - Complete the task, then message the lead agent back with your results
 - If you need help from another agent, message them directly
-- If you're unsure what to do, check the swarm and message the lead agent`;
+- If you're unsure what to do, check the swarm and message the lead agent
+
+Note: Your role may change during the session. If you receive a [SWARM SYSTEM] message about a role change, adapt your behavior accordingly.`;
 }
 
 function buildApiReference(sessionId: string, swarmApiUrl: string): string {

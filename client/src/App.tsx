@@ -22,11 +22,14 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const writersRef = useRef<Map<string, (data: string) => void>>(new Map());
   const pendingCreatesRef = useRef<Map<string, { agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole }>>(new Map());
+  const pendingOutputRef = useRef<Map<string, string[]>>(new Map());
 
   const { agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, createAgent, refresh } = useAgents();
 
   // WebSocket connection
   useEffect(() => {
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
     function connect() {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -35,7 +38,7 @@ export default function App() {
       ws.onopen = () => setConnected(true);
       ws.onclose = () => {
         setConnected(false);
-        setTimeout(connect, 2000);
+        reconnectTimer = setTimeout(connect, 2000);
       };
 
       ws.onmessage = (event) => {
@@ -72,7 +75,14 @@ export default function App() {
 
           case 'output': {
             const writer = writersRef.current.get(msg.sessionId);
-            if (writer) writer(msg.data);
+            if (writer) {
+              writer(msg.data);
+            } else {
+              // Buffer for sessions whose terminal hasn't mounted yet
+              const pending = pendingOutputRef.current.get(msg.sessionId) || [];
+              pending.push(msg.data);
+              pendingOutputRef.current.set(msg.sessionId, pending);
+            }
             break;
           }
 
@@ -127,12 +137,50 @@ export default function App() {
             });
             break;
           }
+
+          case 'session:restore': {
+            const session: TerminalSession = {
+              id: msg.sessionId,
+              agentId: msg.agentId,
+              agentName: msg.agentName,
+              agentEmail: msg.agentEmail,
+              cliType: msg.cliType,
+              executionMode: msg.executionMode,
+              swarmRole: msg.swarmRole,
+            };
+            setSessions(prev => {
+              const next = new Map(prev);
+              next.set(msg.sessionId, session);
+              return next;
+            });
+            setLayout(prev => {
+              const leaves = prev ? getLeaves(prev) : [];
+              if (leaves.includes(msg.sessionId)) return prev; // dedup on reconnect
+              leaves.push(msg.sessionId);
+              return leaves.length === 1 ? leaves[0] : createBalancedTreeFromLeaves(leaves);
+            });
+            // Only replay scrollback if terminal hasn't mounted yet (fresh page load).
+            // On WS reconnect without reload, writer already exists — skip to avoid duplication.
+            if (msg.scrollback && !writersRef.current.has(msg.sessionId)) {
+              const pending = pendingOutputRef.current.get(msg.sessionId) || [];
+              pending.push(msg.scrollback);
+              pendingOutputRef.current.set(msg.sessionId, pending);
+            }
+            break;
+          }
         }
       };
     }
 
     connect();
-    return () => { wsRef.current?.close(); };
+    return () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onclose = null; // prevent reconnect from firing on cleanup close
+        ws.close();
+      }
+    };
   }, []);
 
   const sendWs = useCallback((data: unknown) => {
@@ -198,6 +246,12 @@ export default function App() {
 
   const handleTerminalReady = useCallback((sessionId: string, write: (data: string) => void) => {
     writersRef.current.set(sessionId, write);
+    // Flush any buffered output (e.g. scrollback from restored sessions)
+    const pending = pendingOutputRef.current.get(sessionId);
+    if (pending) {
+      for (const data of pending) write(data);
+      pendingOutputRef.current.delete(sessionId);
+    }
   }, []);
 
   const handleBroadcast = useCallback((text: string) => {

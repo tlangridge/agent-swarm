@@ -22,8 +22,11 @@ export interface PtySession {
   pty: IPty;
   cols: number;
   rows: number;
+  scrollback: string;
   createdAt: Date;
 }
+
+export const MAX_SCROLLBACK = 100 * 1024; // 100KB per session
 
 export const sessions = new Map<string, PtySession>();
 
@@ -164,6 +167,7 @@ export function spawnSession(
     pty: ptyProcess,
     cols,
     rows,
+    scrollback: '',
     createdAt: new Date(),
   };
 
@@ -306,6 +310,7 @@ function spawnDockerSession(
     pty: ptyProcess,
     cols,
     rows,
+    scrollback: '',
     createdAt: new Date(),
   };
 

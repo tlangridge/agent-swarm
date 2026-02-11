@@ -82,5 +82,6 @@ export interface WsExitedMsg { type: 'exited'; sessionId: string; exitCode: numb
 export interface WsErrorMsg { type: 'error'; message: string }
 export interface WsSwarmUpdateMsg { type: 'swarm:update'; members: SwarmMember[]; leadSessionId: string | null }
 export interface WsSessionSpawnedMsg { type: 'session:spawned'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole }
+export interface WsSessionRestoreMsg { type: 'session:restore'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; scrollback?: string }
 
-export type ServerMessage = WsCreatedMsg | WsOutputMsg | WsExitedMsg | WsErrorMsg | WsSwarmUpdateMsg | WsSessionSpawnedMsg;
+export type ServerMessage = WsCreatedMsg | WsOutputMsg | WsExitedMsg | WsErrorMsg | WsSwarmUpdateMsg | WsSessionSpawnedMsg | WsSessionRestoreMsg;
