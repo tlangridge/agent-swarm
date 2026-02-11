@@ -85,6 +85,32 @@ Serves the built client and API on `http://localhost:3000`.
 
 When an agent identity is assigned, the CLI session receives the agent's name and email as environment variables (`AGENT_SWARM_AGENT_NAME`, `AGENT_SWARM_AGENT_EMAIL`). Claude Code sessions also get a system prompt injection identifying the agent.
 
+## Use Cases
+
+### Parallel code research
+
+Spin up three Claude Code workers pointed at the same repo. Tell one to map out the database schema, another to trace the authentication flow, and a third to inventory the API endpoints. Read all three results side by side without waiting for them sequentially.
+
+### Multi-agent task delegation
+
+Launch a lead agent and a couple of workers. Give the lead a high-level goal like "refactor the payment module to use Stripe's new API." The lead breaks the task down, messages workers with specific sub-tasks, and synthesizes the results — all coordinated through the swarm API.
+
+### Cross-model comparison
+
+Open a Claude Code tile and a Gemini CLI tile side by side. Paste the same prompt into both using the broadcast bar and compare how each model approaches the problem. Useful for evaluating model strengths on your actual codebase.
+
+### Sandboxed experimentation
+
+Run agents in Docker containers so they can't accidentally trash your local filesystem. Useful when you want to let an agent run autonomously but don't fully trust the commands it might execute.
+
+### Mixed-tool workflows
+
+Use a Claude Code agent for the main coding task while a Bash agent runs your test suite in a loop, watches logs, or monitors a dev server. Everything is visible in the same tiled interface.
+
+### Code review swarm
+
+Point multiple workers at different parts of a large PR or codebase. Each agent reviews a subset of files and reports findings back to the lead, who compiles a unified review summary.
+
 ## Project Structure
 
 ```
