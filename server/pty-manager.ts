@@ -6,7 +6,7 @@ import path from 'path';
 import type { SwarmRole } from './services/swarm-registry.js';
 import { buildSwarmPrompt } from './services/swarm-prompts.js';
 
-export const PORT = parseInt(process.env.PORT || '3000', 10);
+export const PORT = parseInt(process.env.PORT || '3010', 10);
 
 export type CliType = 'bash' | 'claude' | 'gemini' | 'codex' | 'opencode';
 export type ExecutionMode = 'local' | 'docker';
@@ -16,8 +16,10 @@ export interface PtySession {
   agentId: string | null;
   agentName: string | null;
   agentEmail: string | null;
+  projectPath: string | null;
   cliType: CliType;
   executionMode: ExecutionMode;
+  permissionMode: PermissionMode;
   containerName: string | null;
   pty: IPty;
   cols: number;
@@ -77,6 +79,18 @@ function resolveCliPath(cliType: CliType): string {
 
 export type PermissionMode = 'autonomous' | 'regular';
 
+function getAutonomousArgs(cliType: CliType, permissionMode: PermissionMode): string[] {
+  if (permissionMode !== 'autonomous') return [];
+  switch (cliType) {
+    case 'claude':
+      return ['--dangerously-skip-permissions'];
+    case 'codex':
+      return ['--yolo'];
+    default:
+      return [];
+  }
+}
+
 function getCliArgs(
   cliType: CliType,
   agent?: { name: string; email: string } | null,
@@ -86,10 +100,7 @@ function getCliArgs(
   swarmApiUrl?: string,
 ): string[] {
   if (cliType === 'claude') {
-    const args: string[] = [];
-    if (permissionMode === 'autonomous') {
-      args.push('--dangerously-skip-permissions');
-    }
+    const args = getAutonomousArgs(cliType, permissionMode);
     if (agent && sessionId && swarmApiUrl) {
       const prompt = buildSwarmPrompt(swarmRole, agent, sessionId, swarmApiUrl);
       args.push('--append-system-prompt', prompt);
@@ -100,6 +111,9 @@ function getCliArgs(
       );
     }
     return args;
+  }
+  if (cliType === 'codex') {
+    return getAutonomousArgs(cliType, permissionMode);
   }
   return [];
 }
@@ -113,10 +127,12 @@ export function spawnSession(
   executionMode: ExecutionMode = 'local',
   permissionMode: PermissionMode = 'autonomous',
   swarmRole: SwarmRole = 'worker',
+  projectPath?: string,
 ): PtySession {
   if (executionMode === 'docker') {
-    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole);
+    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath);
   }
+  const effectiveProjectPath = projectPath || process.env.HOME || '/tmp';
 
   const swarmApiUrl = `http://localhost:${PORT}`;
   const shell = resolveCliPath(cliType);
@@ -152,7 +168,7 @@ export function spawnSession(
     name: 'xterm-256color',
     cols,
     rows,
-    cwd: process.env.HOME || '/tmp',
+    cwd: effectiveProjectPath,
     env,
   });
 
@@ -161,8 +177,10 @@ export function spawnSession(
     agentId: agent?.id ?? null,
     agentName: agent?.name ?? null,
     agentEmail: agent?.email ?? null,
+    projectPath: effectiveProjectPath,
     cliType,
     executionMode: 'local',
+    permissionMode,
     containerName: null,
     pty: ptyProcess,
     cols,
@@ -177,9 +195,9 @@ export function spawnSession(
 
 function getDockerCliCommand(cliType: CliType, permissionMode: PermissionMode = 'autonomous'): { cmd: string; args: string[] } {
   switch (cliType) {
-    case 'claude': return { cmd: 'claude', args: permissionMode === 'autonomous' ? ['--dangerously-skip-permissions'] : [] };
+    case 'claude': return { cmd: 'claude', args: getAutonomousArgs(cliType, permissionMode) };
     case 'gemini': return { cmd: 'gemini', args: [] };
-    case 'codex': return { cmd: 'codex', args: [] };
+    case 'codex': return { cmd: 'codex', args: getAutonomousArgs(cliType, permissionMode) };
     case 'opencode': return { cmd: 'opencode', args: [] };
     case 'bash': return { cmd: '/bin/bash', args: [] };
   }
@@ -230,10 +248,12 @@ function spawnDockerSession(
   agent?: { id: string; name: string; email: string } | null,
   permissionMode: PermissionMode = 'autonomous',
   swarmRole: SwarmRole = 'worker',
+  projectPath?: string,
 ): PtySession {
   const containerName = `agent-swarm-${id.slice(0, 8)}`;
   const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode);
   const { configDir, workspaceDir } = ensureDockerVolumeDirs(agent?.id ?? null);
+  const effectiveProjectPath = projectPath || workspaceDir;
 
   // Seed Claude credentials from an existing authenticated agent
   if (cliType === 'claude') {
@@ -250,7 +270,7 @@ function spawnDockerSession(
     '-v', `${configDir}/claude:/home/agent/.claude`,
     '-v', `${configDir}/gemini:/home/agent/.gemini`,
     '-v', `${configDir}/codex:/home/agent/.codex`,
-    '-v', `${workspaceDir}:/home/agent/workspace`,
+    '-v', `${effectiveProjectPath}:/home/agent/workspace`,
   ];
 
   // On Linux, host.docker.internal isn't provided by default
@@ -304,8 +324,10 @@ function spawnDockerSession(
     agentId: agent?.id ?? null,
     agentName: agent?.name ?? null,
     agentEmail: agent?.email ?? null,
+    projectPath: effectiveProjectPath,
     cliType,
     executionMode: 'docker',
+    permissionMode,
     containerName,
     pty: ptyProcess,
     cols,

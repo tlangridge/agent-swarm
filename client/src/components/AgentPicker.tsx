@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AgentIdentity, CliType, ExecutionMode, PermissionMode, SwarmRole } from '../types';
+import type { AgentIdentity, CliType, ExecutionMode, PermissionMode, SwarmRole, Worktree } from '../types';
 import CreateAgentForm from './CreateAgentForm';
 
 interface AgentPickerProps {
@@ -8,8 +8,12 @@ interface AgentPickerProps {
   dockerAvailable: boolean;
   dockerImageBuilt: boolean;
   leadSessionId: string | null;
-  onSelect: (agent: AgentIdentity | null, cliType: CliType, executionMode: ExecutionMode, permissionMode: PermissionMode, swarmRole: SwarmRole) => void;
+  worktrees: Worktree[];
+  isGitRepo: boolean;
+  projectPath: string;
+  onSelect: (agent: AgentIdentity | null, cliType: CliType, executionMode: ExecutionMode, permissionMode: PermissionMode, swarmRole: SwarmRole, worktree: Worktree | null) => void;
   onCreateAgent: (name: string, defaultCliType: string) => Promise<AgentIdentity | null>;
+  onCreateWorktree: (branch: string, baseBranch?: string) => Promise<Worktree | null>;
   onBuildDockerImage?: () => Promise<void>;
   onClose: () => void;
 }
@@ -21,21 +25,25 @@ const CLI_OPTIONS: { value: CliType; label: string }[] = [
   { value: 'bash', label: 'Bash Shell' },
 ];
 
-export default function AgentPicker({ agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, leadSessionId, onSelect, onCreateAgent, onBuildDockerImage, onClose }: AgentPickerProps) {
+export default function AgentPicker({ agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, leadSessionId, worktrees, isGitRepo, projectPath, onSelect, onCreateAgent, onCreateWorktree, onBuildDockerImage, onClose }: AgentPickerProps) {
   const [mode, setMode] = useState<'pick' | 'create'>('pick');
   const [selectedCli, setSelectedCli] = useState<CliType>('claude');
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('local');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('autonomous');
   const [swarmRole, setSwarmRole] = useState<SwarmRole>('worker');
+  const [selectedWorktree, setSelectedWorktree] = useState<Worktree | null>(null);
   const [creating, setCreating] = useState(false);
   const [building, setBuilding] = useState(false);
+  const [showNewWorktree, setShowNewWorktree] = useState(false);
+  const [newBranchName, setNewBranchName] = useState('');
+  const [creatingWorktree, setCreatingWorktree] = useState(false);
 
   const handleSelectAgent = (agent: AgentIdentity) => {
-    onSelect(agent, selectedCli, executionMode, permissionMode, swarmRole);
+    onSelect(agent, selectedCli, executionMode, permissionMode, swarmRole, selectedWorktree);
   };
 
   const handleQuickLaunch = () => {
-    onSelect(null, selectedCli, executionMode, permissionMode, swarmRole);
+    onSelect(null, selectedCli, executionMode, permissionMode, swarmRole, selectedWorktree);
   };
 
   const handleCreate = async (name: string, defaultCliType: string) => {
@@ -43,9 +51,24 @@ export default function AgentPicker({ agents, agentmailConfigured, dockerAvailab
     const agent = await onCreateAgent(name, defaultCliType);
     setCreating(false);
     if (agent) {
-      onSelect(agent, defaultCliType as CliType, executionMode, permissionMode, swarmRole);
+      onSelect(agent, defaultCliType as CliType, executionMode, permissionMode, swarmRole, selectedWorktree);
     }
   };
+
+  const handleCreateWorktree = async () => {
+    if (!newBranchName.trim()) return;
+    setCreatingWorktree(true);
+    const wt = await onCreateWorktree(newBranchName.trim());
+    setCreatingWorktree(false);
+    if (wt) {
+      setSelectedWorktree(wt);
+      setNewBranchName('');
+      setShowNewWorktree(false);
+    }
+  };
+
+  // Non-main worktrees (ones we created, not the main repo checkout)
+  const selectableWorktrees = worktrees.filter(w => !w.isMain);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -111,25 +134,34 @@ export default function AgentPicker({ agents, agentmailConfigured, dockerAvailab
               </div>
             )}
 
-            {selectedCli === 'claude' && (
-              <div className="cli-selector">
-                <label>Permission Mode:</label>
-                <div className="cli-options">
-                  <button
-                    className={`cli-option ${permissionMode === 'autonomous' ? 'active' : ''}`}
-                    onClick={() => setPermissionMode('autonomous')}
-                  >
-                    Autonomous
-                  </button>
-                  <button
-                    className={`cli-option ${permissionMode === 'regular' ? 'active' : ''}`}
-                    onClick={() => setPermissionMode('regular')}
-                  >
-                    Regular
-                  </button>
-                </div>
+            <div className="cli-selector">
+              <label>Permission Mode:</label>
+              <div className="cli-options">
+                <button
+                  className={`cli-option ${permissionMode === 'autonomous' ? 'active' : ''}`}
+                  onClick={() => setPermissionMode('autonomous')}
+                >
+                  Autonomous
+                </button>
+                <button
+                  className={`cli-option ${permissionMode === 'regular' ? 'active' : ''}`}
+                  onClick={() => setPermissionMode('regular')}
+                >
+                  Regular
+                </button>
               </div>
-            )}
+              <div className="worktree-info" style={{ marginTop: 8 }}>
+                {selectedCli === 'claude' && (
+                  <span>Autonomous adds <span className="info-text">--dangerously-skip-permissions</span> for Claude.</span>
+                )}
+                {selectedCli === 'codex' && (
+                  <span>Autonomous adds <span className="info-text">--yolo</span> for Codex.</span>
+                )}
+                {selectedCli !== 'claude' && selectedCli !== 'codex' && (
+                  <span>This CLI currently ignores permission mode.</span>
+                )}
+              </div>
+            </div>
 
             <div className="cli-selector">
               <label>Swarm Role:</label>
@@ -153,6 +185,63 @@ export default function AgentPicker({ agents, agentmailConfigured, dockerAvailab
                 </div>
               )}
             </div>
+
+            {isGitRepo && projectPath && (
+              <div className="cli-selector">
+                <label>Worktree:</label>
+                <div className="cli-options worktree-options">
+                  <button
+                    className={`cli-option ${selectedWorktree === null ? 'active' : ''}`}
+                    onClick={() => setSelectedWorktree(null)}
+                  >
+                    Main repo
+                  </button>
+                  {selectableWorktrees.map(wt => (
+                    <button
+                      key={wt.path}
+                      className={`cli-option ${selectedWorktree?.path === wt.path ? 'active' : ''}`}
+                      onClick={() => setSelectedWorktree(wt)}
+                      title={wt.path}
+                    >
+                      {wt.branch}
+                    </button>
+                  ))}
+                  <button
+                    className="cli-option new-worktree-btn"
+                    onClick={() => setShowNewWorktree(!showNewWorktree)}
+                  >
+                    + New
+                  </button>
+                </div>
+                {showNewWorktree && (
+                  <div className="new-worktree-form" style={{ marginTop: 8 }}>
+                    <input
+                      type="text"
+                      value={newBranchName}
+                      onChange={e => setNewBranchName(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleCreateWorktree()}
+                      placeholder="Branch name (e.g. feature/auth)"
+                      className="worktree-input"
+                      disabled={creatingWorktree}
+                      autoFocus
+                    />
+                    <button
+                      className="secondary-btn"
+                      onClick={handleCreateWorktree}
+                      disabled={creatingWorktree || !newBranchName.trim()}
+                      style={{ marginLeft: 8 }}
+                    >
+                      {creatingWorktree ? 'Creating...' : 'Create'}
+                    </button>
+                  </div>
+                )}
+                {selectedWorktree && (
+                  <div className="worktree-info" style={{ marginTop: 8 }}>
+                    <span className="info-text">Path: {selectedWorktree.path}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="agent-list-section">
               <div className="agent-list-header">

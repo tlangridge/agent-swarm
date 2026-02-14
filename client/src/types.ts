@@ -25,6 +25,59 @@ export interface AgentIdentity {
   updatedAt: string;
 }
 
+export interface Worktree {
+  path: string;
+  branch: string;
+  head: string;
+  isMain: boolean;
+}
+
+export type WorktreeChangeStatus = 'M' | 'A' | 'D' | 'R' | '??' | 'U';
+
+export interface WorktreeChangeEntry {
+  status: WorktreeChangeStatus;
+  path: string;
+  oldPath?: string;
+}
+
+export interface WorktreeOverviewTotals {
+  changed: number;
+  modified: number;
+  added: number;
+  deleted: number;
+  renamed: number;
+  untracked: number;
+  conflicted: number;
+}
+
+export interface WorktreeOverviewAgent {
+  sessionId: string;
+  agentId: string | null;
+  agentName: string | null;
+  role: SwarmRole;
+  cliType: CliType;
+}
+
+export interface WorktreeOverviewItem {
+  path: string;
+  branch: string;
+  head: string;
+  isMain: boolean;
+  changes: WorktreeChangeEntry[];
+  totals: WorktreeOverviewTotals;
+  truncated: boolean;
+  totalDetected: number;
+  activeAgents: WorktreeOverviewAgent[];
+  error?: string;
+}
+
+export interface WorktreeOverviewResponse {
+  projectPath: string;
+  isGitRepo: boolean;
+  worktrees: WorktreeOverviewItem[];
+  generatedAt: string;
+}
+
 export interface TerminalSession {
   id: string;
   agentId: string | null;
@@ -33,6 +86,7 @@ export interface TerminalSession {
   cliType: CliType;
   executionMode: ExecutionMode;
   swarmRole: SwarmRole;
+  worktreeBranch?: string;
 }
 
 // WebSocket messages
@@ -46,6 +100,7 @@ export interface WsCreateMsg {
   executionMode?: ExecutionMode;
   permissionMode?: PermissionMode;
   swarmRole?: SwarmRole;
+  projectPath?: string;
   cols: number;
   rows: number;
 }
@@ -74,7 +129,18 @@ export interface WsSetRoleMsg {
   role: SwarmRole;
 }
 
-export type ClientMessage = WsCreateMsg | WsInputMsg | WsResizeMsg | WsKillMsg | WsSetRoleMsg;
+export interface WsSetProjectPathMsg {
+  type: 'set-project-path';
+  projectPath: string;
+}
+
+export interface WsInjectMsg {
+  type: 'inject';
+  sessionId: string;
+  text: string;
+}
+
+export type ClientMessage = WsCreateMsg | WsInputMsg | WsResizeMsg | WsKillMsg | WsSetRoleMsg | WsSetProjectPathMsg | WsInjectMsg;
 
 export interface WsCreatedMsg { type: 'created'; sessionId: string; requestId?: string; agentId: string | null; cliType: CliType }
 export interface WsOutputMsg { type: 'output'; sessionId: string; data: string }

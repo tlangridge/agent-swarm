@@ -3,14 +3,17 @@ import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { handleWebSocket } from './ws-handler.js';
+import { handleWebSocket, activateSessionStreaming } from './ws-handler.js';
 import { agentRoutes } from './routes/agents.js';
 import { swarmRoutes } from './routes/swarm.js';
+import { projectRoutes } from './routes/project.js';
+import { worktreeRoutes } from './routes/worktrees.js';
 import { killAll, validateCliTools } from './pty-manager.js';
 import { detectDocker, isDockerAvailable, isImageBuilt, buildImage } from './docker-builder.js';
+import { persistStateNow, restorePersistedState } from './services/session-persistence.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = parseInt(process.env.PORT || '3000', 10);
+const PORT = parseInt(process.env.PORT || '3010', 10);
 
 const app = express();
 // Custom JSON parser that sanitizes Unicode smart quotes before parsing.
@@ -39,6 +42,12 @@ app.use((req, res, next) => {
 });
 app.use('/api/agents', agentRoutes);
 app.use('/api/swarm', swarmRoutes);
+app.use('/api/project', projectRoutes);
+app.use('/api/worktrees', worktreeRoutes);
+
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, service: 'agent-swarm' });
+});
 
 // Docker status endpoint
 app.get('/api/docker/status', (_req, res) => {
@@ -78,15 +87,54 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', handleWebSocket);
 
+async function verifyLocalRouting(port: number): Promise<void> {
+  const urls = [`http://localhost:${port}/api/health`, `http://127.0.0.1:${port}/api/health`];
+
+  for (const url of urls) {
+    const response = await fetch(url, { headers: { Accept: 'application/json' } });
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok || !contentType.includes('application/json')) {
+      throw new Error(`Unexpected response from ${url} (${response.status} ${contentType || 'unknown content type'})`);
+    }
+
+    const body = await response.json() as { ok?: boolean; service?: string };
+    if (body.ok !== true || body.service !== 'agent-swarm') {
+      throw new Error(`Unexpected service response from ${url}`);
+    }
+  }
+}
+
 server.listen(PORT, async () => {
+  try {
+    await verifyLocalRouting(PORT);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'unknown error';
+    console.error(`\nBackend port check failed for localhost:${PORT}.`);
+    console.error('Another local service is handling this port. Update PORT in .env to an unused value and restart.');
+    console.error(`Details: ${message}`);
+    process.exit(1);
+    return;
+  }
+
   console.log(`Agent Swarm server on http://localhost:${PORT}`);
   console.log(`WebSocket on ws://localhost:${PORT}/ws`);
   validateCliTools();
   await detectDocker();
+  const restored = restorePersistedState();
+  activateSessionStreaming();
+  if (restored.restored > 0 || restored.failed > 0) {
+    console.log(`Session restore complete: ${restored.restored} restored, ${restored.failed} failed`);
+  }
 });
 
 function shutdown() {
   console.log('\nShutting down...');
+  try {
+    persistStateNow();
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'unknown error';
+    console.error(`Failed to persist session state on shutdown: ${message}`);
+  }
   killAll();
   server.close();
   // Force exit after 1s in case PTY cleanup hangs

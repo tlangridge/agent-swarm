@@ -8,38 +8,10 @@ import { spawnSession, sessions, PORT } from '../pty-manager.js';
 import type { CliType } from '../pty-manager.js';
 import { buildOrientationMessage } from '../services/swarm-prompts.js';
 import type { SwarmRole } from '../services/swarm-registry.js';
+import { getProjectPath } from './project.js';
+import { injectMessage } from '../services/pty-writer.js';
 
 export const swarmRoutes = Router();
-
-/**
- * Write text to a PTY in small chunks to avoid triggering paste detection
- * in CLI tools like Claude Code. Returns a promise that resolves when
- * all chunks have been written.
- */
-function writeChunked(
-  ptyProcess: { write(data: string): void },
-  text: string,
-): Promise<void> {
-  const CHUNK_SIZE = 32;
-  const CHUNK_DELAY = 10; // ms between chunks
-
-  return new Promise((resolve) => {
-    if (text.length <= CHUNK_SIZE) {
-      ptyProcess.write(text);
-      resolve();
-      return;
-    }
-    let offset = 0;
-    function next() {
-      const chunk = text.slice(offset, offset + CHUNK_SIZE);
-      ptyProcess.write(chunk);
-      offset += CHUNK_SIZE;
-      if (offset >= text.length) resolve();
-      else setTimeout(next, CHUNK_DELAY);
-    }
-    next();
-  });
-}
 
 // GET /api/swarm/agents — List active swarm members + available (inactive) agents
 swarmRoutes.get('/agents', async (_req, res) => {
@@ -81,9 +53,7 @@ swarmRoutes.post('/message', (req, res) => {
 
   const senderName = sender.agentName || 'Anonymous';
   const formatted = `[SWARM from ${senderName}]: ${message}`;
-  writeChunked(session.pty, formatted).then(() => {
-    setTimeout(() => session.pty.write('\r'), 50);
-  });
+  injectMessage(target.sessionId, formatted);
 
   res.json({ delivered: true, toSessionId: target.sessionId });
 });
@@ -109,9 +79,7 @@ swarmRoutes.post('/broadcast', (req, res) => {
     if (member.sessionId === senderSessionId) continue;
     const session = sessions.get(member.sessionId);
     if (session) {
-      writeChunked(session.pty, formatted).then(() => {
-        setTimeout(() => session.pty.write('\r'), 50);
-      });
+      injectMessage(member.sessionId, formatted);
       recipientCount++;
     }
   }
@@ -192,7 +160,7 @@ swarmRoutes.post('/spawn', async (req, res) => {
     // Spawn PTY session
     const sessionId = randomUUID();
     try {
-      spawnSession(sessionId, cliType, 80, 24, agent, 'local', 'autonomous', swarmRole);
+      spawnSession(sessionId, cliType, 80, 24, agent, 'local', 'autonomous', swarmRole, getProjectPath() || undefined);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to spawn terminal';
       console.error(`PTY spawn failed for ${cliType}:`, message);
@@ -227,8 +195,7 @@ swarmRoutes.post('/spawn', async (req, res) => {
       const swarmApiUrl = `http://localhost:${PORT}`;
       const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl);
       setTimeout(() => {
-        const s = sessions.get(sessionId);
-        if (s) s.pty.write(orientation);
+        injectMessage(sessionId, orientation);
       }, 500);
     }
 
@@ -236,17 +203,9 @@ swarmRoutes.post('/spawn', async (req, res) => {
     if (task && typeof task === 'string') {
       const sender = getMember(senderSessionId);
       const senderName = sender?.agentName || 'Anonymous';
+      const taskMsg = `[SWARM from ${senderName}]: ${task}`;
       setTimeout(() => {
-        const s = sessions.get(sessionId);
-        if (s) {
-          const taskMsg = `[SWARM from ${senderName}]: ${task}`;
-          writeChunked(s.pty, taskMsg).then(() => {
-            setTimeout(() => {
-              const s2 = sessions.get(sessionId);
-              if (s2) s2.pty.write('\r');
-            }, 50);
-          });
-        }
+        injectMessage(sessionId, taskMsg);
       }, 2000);
     }
 

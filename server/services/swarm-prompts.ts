@@ -10,9 +10,12 @@ export function buildSwarmPrompt(
   agent: AgentInfo,
   sessionId: string,
   swarmApiUrl: string,
+  projectPath?: string,
+  worktreeBranch?: string,
 ): string {
   const identity = `Your identity: Name="${agent.name}", Email="${agent.email}".\nYour session ID: ${sessionId}`;
   const api = buildApiReference(sessionId, swarmApiUrl);
+  const workContext = buildWorkContext(projectPath, worktreeBranch);
 
   if (role === 'lead') {
     return `${identity}
@@ -20,7 +23,7 @@ export function buildSwarmPrompt(
 === SWARM COORDINATION ===
 
 You are the LEAD agent in a multi-agent swarm. The user will give you tasks. You should break them down and delegate work to the other agents, then synthesize their results.
-
+${workContext}
 ${api}
 
 AS LEAD AGENT:
@@ -39,7 +42,7 @@ Note: Your role may change during the session. If you receive a [SWARM SYSTEM] m
 === SWARM COORDINATION ===
 
 You are a WORKER agent in a multi-agent swarm. A lead agent will coordinate your work.
-
+${workContext}
 ${api}
 
 AS A WORKER AGENT:
@@ -49,6 +52,15 @@ AS A WORKER AGENT:
 - If you're unsure what to do, check the swarm and message the lead agent
 
 Note: Your role may change during the session. If you receive a [SWARM SYSTEM] message about a role change, adapt your behavior accordingly.`;
+}
+
+function buildWorkContext(projectPath?: string, worktreeBranch?: string): string {
+  if (!projectPath) return '';
+  const lines: string[] = ['', `Working directory: ${projectPath}`];
+  if (worktreeBranch) {
+    lines.push(`Git branch: ${worktreeBranch} (dedicated worktree — do NOT switch branches)`);
+  }
+  return lines.join('\n');
 }
 
 function buildApiReference(sessionId: string, swarmApiUrl: string): string {
@@ -90,13 +102,25 @@ export function buildOrientationMessage(
   agentName: string | null,
   sessionId: string,
   swarmApiUrl: string,
+  projectPath?: string,
+  worktreeBranch?: string,
 ): string {
   const name = agentName || 'Anonymous';
-  return [
+  const lines = [
     '',
     '=== SWARM COORDINATION ===',
     `You are "${name}" (${role}) in a multi-agent swarm.`,
     `Session ID: ${sessionId}`,
+  ];
+
+  if (projectPath) {
+    lines.push(`Working directory: ${projectPath}`);
+    if (worktreeBranch) {
+      lines.push(`Git branch: ${worktreeBranch} (dedicated worktree)`);
+    }
+  }
+
+  lines.push(
     '',
     'Swarm API:',
     `  List agents:    curl -s ${swarmApiUrl}/api/swarm/agents`,
@@ -108,5 +132,7 @@ export function buildOrientationMessage(
     'Maximum 10 agents can run simultaneously.',
     '===========================',
     '',
-  ].join('\r\n');
+  );
+
+  return lines.join('\r\n');
 }

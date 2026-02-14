@@ -1,17 +1,117 @@
+import { useState, useEffect, useRef } from 'react';
+
 interface HeaderProps {
   sessionCount: number;
   connected: boolean;
+  projectPath: string;
+  projectPathValid: boolean | null;
+  pickingProjectPath: boolean;
   onAddTerminal: () => void;
   onOpenSettings: () => void;
+  onSetProjectPath: (path: string) => void;
+  onPickProjectPath: () => void;
 }
 
-export default function Header({ sessionCount, connected, onAddTerminal, onOpenSettings }: HeaderProps) {
+export default function Header({
+  sessionCount,
+  connected,
+  projectPath,
+  projectPathValid,
+  pickingProjectPath,
+  onAddTerminal,
+  onOpenSettings,
+  onSetProjectPath,
+  onPickProjectPath,
+}: HeaderProps) {
+  const [editing, setEditing] = useState(false);
+  const [inputValue, setInputValue] = useState(projectPath);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setInputValue(projectPath);
+  }, [projectPath]);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [editing]);
+
+  const handleSubmit = () => {
+    setEditing(false);
+    const trimmed = inputValue.trim();
+    if (trimmed !== projectPath) {
+      onSetProjectPath(trimmed);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSubmit();
+    } else if (e.key === 'Escape') {
+      setInputValue(projectPath);
+      setEditing(false);
+    }
+  };
+
+  const handleBrowseClick = () => {
+    setEditing(false);
+    onPickProjectPath();
+  };
+
   return (
     <header className="header">
       <div className="header-left">
         <h1 className="header-title">Agent Swarm</h1>
         <span className={`connection-dot ${connected ? 'connected' : 'disconnected'}`} />
       </div>
+
+      <div className="header-center">
+        <div className="project-path-display">
+          {editing ? (
+            <input
+              ref={inputRef}
+              className="project-path-input"
+              type="text"
+              value={inputValue}
+              onChange={e => setInputValue(e.target.value)}
+              onBlur={handleSubmit}
+              onKeyDown={handleKeyDown}
+              placeholder="/path/to/your/project"
+              spellCheck={false}
+            />
+          ) : (
+            <button
+              className="project-path-main"
+              onClick={() => setEditing(true)}
+              title={projectPath || 'Click to set project path'}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style={{ flexShrink: 0 }}>
+                <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.879a1.5 1.5 0 0 1 1.06.44l1.122 1.12A1.5 1.5 0 0 0 9.62 4H13.5A1.5 1.5 0 0 1 15 5.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9z"/>
+              </svg>
+              <span className="project-path-text">
+                {projectPath || 'Set project path...'}
+              </span>
+              {projectPath && projectPathValid !== null && (
+                <span className={`project-path-status ${projectPathValid ? 'valid' : 'invalid'}`}>
+                  {projectPathValid ? '\u2713' : '\u2717'}
+                </span>
+              )}
+            </button>
+          )}
+
+          <button
+            className="project-path-browse-btn"
+            onMouseDown={e => e.preventDefault()}
+            onClick={handleBrowseClick}
+            disabled={pickingProjectPath}
+            title="Choose project folder"
+          >
+            {pickingProjectPath ? 'Choosing...' : 'Browse...'}
+          </button>
+        </div>
+      </div>
+
       <div className="header-right">
         <span className="session-count">{sessionCount} session{sessionCount !== 1 ? 's' : ''}</span>
         <button className="add-btn" onClick={onAddTerminal}>

@@ -5,18 +5,24 @@ import type { CliType, ExecutionMode } from './pty-manager.js';
 import { addMember, removeMember, setRole, getMembers, getLeadSessionId, getMember, swarmEvents } from './services/swarm-registry.js';
 import type { SwarmRole } from './services/swarm-registry.js';
 import { buildOrientationMessage } from './services/swarm-prompts.js';
+import { getProjectPath, setProjectPath } from './routes/project.js';
+import { registerSession, unregisterSession, injectMessage } from './services/pty-writer.js';
+import { schedulePersistState } from './services/session-persistence.js';
 
 type PermissionMode = 'autonomous' | 'regular';
-interface CreateMsg { type: 'create'; requestId?: string; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; executionMode?: ExecutionMode; permissionMode?: PermissionMode; swarmRole?: SwarmRole; cols: number; rows: number }
+interface CreateMsg { type: 'create'; requestId?: string; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; executionMode?: ExecutionMode; permissionMode?: PermissionMode; swarmRole?: SwarmRole; projectPath?: string; cols: number; rows: number }
 interface InputMsg { type: 'input'; sessionId: string; data: string }
 interface ResizeMsg { type: 'resize'; sessionId: string; cols: number; rows: number }
 interface KillMsg { type: 'kill'; sessionId: string }
 interface SetRoleMsg { type: 'set-role'; sessionId: string; role: SwarmRole }
+interface SetProjectPathMsg { type: 'set-project-path'; projectPath: string }
+interface InjectMsg { type: 'inject'; sessionId: string; text: string }
 
-type ClientMessage = CreateMsg | InputMsg | ResizeMsg | KillMsg | SetRoleMsg;
+type ClientMessage = CreateMsg | InputMsg | ResizeMsg | KillMsg | SetRoleMsg | SetProjectPathMsg | InjectMsg;
 
 // Track all connected browser clients for broadcasting swarm updates
 const connectedClients = new Set<WebSocket>();
+const sessionBridges = new Set<string>();
 
 function send(ws: WebSocket, data: unknown): void {
   if (ws.readyState === ws.OPEN) {
@@ -36,9 +42,18 @@ function broadcastSwarmUpdate(): void {
 }
 
 // Emit swarm updates to all browser clients when membership changes
-swarmEvents.on('member:joined', broadcastSwarmUpdate);
-swarmEvents.on('member:left', broadcastSwarmUpdate);
-swarmEvents.on('member:role-changed', broadcastSwarmUpdate);
+swarmEvents.on('member:joined', () => {
+  broadcastSwarmUpdate();
+  schedulePersistState();
+});
+swarmEvents.on('member:left', () => {
+  broadcastSwarmUpdate();
+  schedulePersistState();
+});
+swarmEvents.on('member:role-changed', () => {
+  broadcastSwarmUpdate();
+  schedulePersistState();
+});
 
 // Notify agents via PTY when their role changes
 swarmEvents.on('member:role-changed', (member) => {
@@ -50,8 +65,7 @@ swarmEvents.on('member:role-changed', (member) => {
     ? 'You are now the lead. Coordinate the swarm — check who is available with curl, delegate tasks, and synthesize results.'
     : 'You are now a worker. Wait for instructions from the lead agent.';
   const msg = `[SWARM SYSTEM]: Your role has changed to ${roleLabel}. ${instruction}`;
-  session.pty.write(msg);
-  setTimeout(() => session.pty.write('\r'), 100);
+  injectMessage(member.sessionId, msg);
 });
 
 function accumScrollback(session: { scrollback: string }, data: string): void {
@@ -59,20 +73,17 @@ function accumScrollback(session: { scrollback: string }, data: string): void {
   if (session.scrollback.length > MAX_SCROLLBACK) {
     session.scrollback = session.scrollback.slice(-MAX_SCROLLBACK);
   }
+  schedulePersistState();
 }
 
-// Handle server-spawned sessions (from POST /api/swarm/spawn)
-// Route PTY output to all connected browser clients and notify them to create a tile
-swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole }) => {
+function bridgeSession(sessionId: string): void {
+  if (sessionBridges.has(sessionId)) return;
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  // Notify all clients to create a terminal tile
-  for (const client of connectedClients) {
-    send(client, { type: 'session:spawned', sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole });
-  }
+  sessionBridges.add(sessionId);
+  registerSession(sessionId, session.pty);
 
-  // Broadcast PTY output to all connected clients + accumulate scrollback
   session.pty.onData((data: string) => {
     accumScrollback(session, data);
     for (const client of connectedClients) {
@@ -80,19 +91,40 @@ swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, 
     }
   });
 
-  // Broadcast exit to all clients and clean up
   session.pty.onExit(({ exitCode }: { exitCode: number }) => {
+    unregisterSession(sessionId);
+    sessionBridges.delete(sessionId);
     for (const client of connectedClients) {
       send(client, { type: 'exited', sessionId, exitCode });
     }
     sessions.delete(sessionId);
     removeMember(sessionId);
+    schedulePersistState();
   });
+}
+
+export function activateSessionStreaming(): void {
+  for (const [sessionId] of sessions) {
+    bridgeSession(sessionId);
+  }
+}
+
+// Handle server-spawned sessions (from POST /api/swarm/spawn)
+// Route PTY output to all connected browser clients and notify them to create a tile
+swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole }) => {
+  if (!sessions.has(sessionId)) return;
+  bridgeSession(sessionId);
+
+  // Notify all clients to create a terminal tile
+  for (const client of connectedClients) {
+    send(client, { type: 'session:spawned', sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole });
+  }
 });
 
 export function handleWebSocket(ws: WebSocket): void {
   // Restore existing sessions before going live
   for (const [sessionId, session] of sessions) {
+    bridgeSession(sessionId);
     const member = getMember(sessionId);
     send(ws, {
       type: 'session:restore',
@@ -136,15 +168,19 @@ export function handleWebSocket(ws: WebSocket): void {
         } : null;
         const swarmRole: SwarmRole = msg.swarmRole || 'worker';
 
-        let session;
+        // Use per-session project path if provided, otherwise fall back to global
+        const effectivePath = msg.projectPath || getProjectPath();
+
         try {
-          session = spawnSession(sessionId, msg.cliType, msg.cols, msg.rows, agent, msg.executionMode, msg.permissionMode, swarmRole);
+          spawnSession(sessionId, msg.cliType, msg.cols, msg.rows, agent, msg.executionMode, msg.permissionMode, swarmRole, effectivePath || undefined);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : 'Failed to spawn terminal';
           console.error(`PTY spawn failed for ${msg.cliType}:`, message);
           send(ws, { type: 'error', message: `Failed to launch ${msg.cliType}: ${message}` });
           return;
         }
+
+        bridgeSession(sessionId);
 
         // Register in swarm
         addMember({
@@ -165,25 +201,9 @@ export function handleWebSocket(ws: WebSocket): void {
             : `http://localhost:${PORT}`;
           const orientation = buildOrientationMessage(swarmRole, agent?.name ?? null, sessionId, swarmApiUrl);
           setTimeout(() => {
-            const s = sessions.get(sessionId);
-            if (s) s.pty.write(orientation);
+            injectMessage(sessionId, orientation);
           }, 500);
         }
-
-        session.pty.onData((data: string) => {
-          accumScrollback(session, data);
-          for (const client of connectedClients) {
-            send(client, { type: 'output', sessionId, data });
-          }
-        });
-
-        session.pty.onExit(({ exitCode }: { exitCode: number }) => {
-          for (const client of connectedClients) {
-            send(client, { type: 'exited', sessionId, exitCode });
-          }
-          sessions.delete(sessionId);
-          removeMember(sessionId);
-        });
 
         send(ws, { type: 'created', sessionId, requestId: msg.requestId, agentId: msg.agentId || null, cliType: msg.cliType });
         break;
@@ -199,17 +219,32 @@ export function handleWebSocket(ws: WebSocket): void {
 
       case 'resize': {
         resizeSession(msg.sessionId, msg.cols, msg.rows);
+        schedulePersistState();
         break;
       }
 
       case 'kill': {
         killSession(msg.sessionId);
         removeMember(msg.sessionId);
+        sessionBridges.delete(msg.sessionId);
+        unregisterSession(msg.sessionId);
+        schedulePersistState();
         break;
       }
 
       case 'set-role': {
         setRole(msg.sessionId, msg.role);
+        break;
+      }
+
+      case 'set-project-path': {
+        setProjectPath(msg.projectPath);
+        schedulePersistState();
+        break;
+      }
+
+      case 'inject': {
+        injectMessage(msg.sessionId, msg.text);
         break;
       }
     }
