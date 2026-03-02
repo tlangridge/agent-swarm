@@ -6,6 +6,7 @@ interface CreateAgentFormProps {
   onBack: () => void;
   creating: boolean;
   agentmailConfigured: boolean;
+  submitLabel?: string;
 }
 
 const CLI_OPTIONS: { value: CliType; label: string }[] = [
@@ -14,7 +15,7 @@ const CLI_OPTIONS: { value: CliType; label: string }[] = [
   { value: 'codex', label: 'Codex CLI' },
 ];
 
-export default function CreateAgentForm({ onSubmit, onBack, creating, agentmailConfigured }: CreateAgentFormProps) {
+export default function CreateAgentForm({ onSubmit, onBack, creating, agentmailConfigured, submitLabel }: CreateAgentFormProps) {
   const [name, setName] = useState('');
   const [cliType, setCliType] = useState<string>('claude');
 
@@ -69,7 +70,7 @@ export default function CreateAgentForm({ onSubmit, onBack, creating, agentmailC
           Back
         </button>
         <button type="submit" className="primary-btn" disabled={!name.trim() || creating}>
-          {creating ? 'Creating...' : 'Create & Launch'}
+          {creating ? 'Creating...' : (submitLabel || 'Create & Launch')}
         </button>
       </div>
     </form>

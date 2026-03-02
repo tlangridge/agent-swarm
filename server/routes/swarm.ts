@@ -2,16 +2,72 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { nanoid } from 'nanoid';
 import { getMembers, getMember, getMemberByName, getLeadSessionId, addMember, swarmEvents } from '../services/swarm-registry.js';
+import type { SwarmRole, FunctionalRole } from '../services/swarm-registry.js';
 import { listAgents, saveAgent } from '../services/agent-store.js';
 import { provisionInbox } from '../services/agentmail.js';
-import { spawnSession, sessions, PORT } from '../pty-manager.js';
+import { spawnSession, sessions, PORT, getSessionByAgentName } from '../pty-manager.js';
 import type { CliType } from '../pty-manager.js';
 import { buildOrientationMessage } from '../services/swarm-prompts.js';
-import type { SwarmRole } from '../services/swarm-registry.js';
 import { getProjectPath } from './project.js';
 import { injectMessage } from '../services/pty-writer.js';
 
 export const swarmRoutes = Router();
+
+function stripAnsi(input: string): string {
+  return input.replace(/\u001B\[[0-9;]*[A-Za-z]/g, '');
+}
+
+// GET /api/swarm/activity — Summary of ALL agents' recent output
+swarmRoutes.get('/activity', (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const agents = getMembers().map(member => {
+    const session = sessions.get(member.sessionId);
+    if (!session) return { name: member.agentName, role: member.functionalRole, lastLines: [], idleSeconds: -1 };
+
+    const cleaned = stripAnsi(session.scrollback).replace(/\r/g, '');
+    const allLines = cleaned.split('\n').filter(l => l.trim());
+    const lastLines = allLines.slice(-5);
+    const idleSeconds = Math.round((Date.now() - session.lastDataAt.getTime()) / 1000);
+
+    return { name: member.agentName, role: member.functionalRole, lastLines, idleSeconds };
+  });
+
+  res.json({ agents });
+});
+
+// GET /api/swarm/activity/:name — Single agent's recent output
+swarmRoutes.get('/activity/:name', (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const session = getSessionByAgentName(req.params.name);
+  if (!session) {
+    return res.status(404).json({ error: `Agent '${req.params.name}' not found or not active` });
+  }
+
+  const lines = parseInt(req.query.lines as string) || 50;
+  const maxLines = Math.min(Math.max(lines, 1), 200);
+
+  const cleaned = stripAnsi(session.scrollback).replace(/\r/g, '');
+  const allLines = cleaned.split('\n').filter(l => l.trim());
+  const lastLines = allLines.slice(-maxLines);
+
+  const idleSeconds = Math.round((Date.now() - session.lastDataAt.getTime()) / 1000);
+
+  res.json({
+    agent: session.agentName,
+    sessionId: session.id,
+    lastLines,
+    idleSeconds,
+    status: 'active',
+  });
+});
 
 // GET /api/swarm/agents — List active swarm members + available (inactive) agents
 swarmRoutes.get('/agents', async (_req, res) => {
@@ -96,7 +152,7 @@ swarmRoutes.post('/spawn', async (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
-  const { name, cliType: requestedCliType, role: requestedRole, task } = req.body;
+  const { name, cliType: requestedCliType, role: requestedRole, functionalRole: requestedFunctionalRole, task } = req.body;
   if (!name || typeof name !== 'string') {
     return res.status(400).json({ error: "Missing 'name' field" });
   }
@@ -112,6 +168,7 @@ swarmRoutes.post('/spawn', async (req, res) => {
   }
 
   const swarmRole: SwarmRole = requestedRole || 'worker';
+  const functionalRole: FunctionalRole | null = requestedFunctionalRole || null;
   let created = false;
   let agent: { id: string; name: string; email: string };
   let cliType: CliType;
@@ -160,7 +217,7 @@ swarmRoutes.post('/spawn', async (req, res) => {
     // Spawn PTY session
     const sessionId = randomUUID();
     try {
-      spawnSession(sessionId, cliType, 80, 24, agent, 'local', 'autonomous', swarmRole, getProjectPath() || undefined);
+      spawnSession(sessionId, cliType, 80, 24, agent, 'local', 'autonomous', swarmRole, getProjectPath() || undefined, functionalRole);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to spawn terminal';
       console.error(`PTY spawn failed for ${cliType}:`, message);
@@ -176,6 +233,7 @@ swarmRoutes.post('/spawn', async (req, res) => {
       cliType,
       executionMode: 'local',
       role: swarmRole,
+      functionalRole,
       joinedAt: new Date().toISOString(),
     });
 
@@ -188,12 +246,13 @@ swarmRoutes.post('/spawn', async (req, res) => {
       cliType,
       executionMode: 'local',
       swarmRole,
+      functionalRole,
     });
 
     // For non-Claude/non-bash CLIs, inject orientation message
     if (cliType !== 'claude' && cliType !== 'bash') {
       const swarmApiUrl = `http://localhost:${PORT}`;
-      const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl);
+      const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, undefined, undefined, functionalRole);
       setTimeout(() => {
         injectMessage(sessionId, orientation);
       }, 500);

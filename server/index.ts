@@ -6,11 +6,17 @@ import { fileURLToPath } from 'url';
 import { handleWebSocket, activateSessionStreaming } from './ws-handler.js';
 import { agentRoutes } from './routes/agents.js';
 import { swarmRoutes } from './routes/swarm.js';
+import { officeRoutes } from './routes/offices.js';
+import { taskRoutes } from './routes/tasks.js';
+import { cronRoutes } from './routes/crons.js';
+import { workspaceRoutes } from './routes/workspace.js';
 import { projectRoutes } from './routes/project.js';
 import { worktreeRoutes } from './routes/worktrees.js';
+import { sessionRoutes } from './routes/sessions.js';
 import { killAll, validateCliTools } from './pty-manager.js';
 import { detectDocker, isDockerAvailable, isImageBuilt, buildImage } from './docker-builder.js';
-import { persistStateNow, restorePersistedState } from './services/session-persistence.js';
+import { persistStateNow } from './services/session-persistence.js';
+import { migrateFromRosters } from './services/office-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3010', 10);
@@ -42,6 +48,11 @@ app.use((req, res, next) => {
 });
 app.use('/api/agents', agentRoutes);
 app.use('/api/swarm', swarmRoutes);
+app.use('/api/swarm/tasks', taskRoutes);
+app.use('/api/swarm/crons', cronRoutes);
+app.use('/api/swarm/files', workspaceRoutes);
+app.use('/api/offices', officeRoutes);
+app.use('/api/sessions', sessionRoutes);
 app.use('/api/project', projectRoutes);
 app.use('/api/worktrees', worktreeRoutes);
 
@@ -116,15 +127,13 @@ server.listen(PORT, async () => {
     return;
   }
 
+  await migrateFromRosters();
   console.log(`Agent Swarm server on http://localhost:${PORT}`);
   console.log(`WebSocket on ws://localhost:${PORT}/ws`);
   validateCliTools();
   await detectDocker();
-  const restored = restorePersistedState();
+  // Session restore is deferred — client drives via POST /api/sessions/restore
   activateSessionStreaming();
-  if (restored.restored > 0 || restored.failed > 0) {
-    console.log(`Session restore complete: ${restored.restored} restored, ${restored.failed} failed`);
-  }
 });
 
 function shutdown() {

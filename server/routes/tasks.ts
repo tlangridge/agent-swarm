@@ -1,0 +1,223 @@
+import { Router } from 'express';
+import { getMember, getMemberByName, getLeadSessionId, recordTaskSuccess, recordTaskFailure, canAcceptTask } from '../services/swarm-registry.js';
+import { listTasks, getTask, createTask, updateTask, deleteTask, areDependenciesMet, getReadyTasks } from '../services/task-board.js';
+import { getActiveShift } from '../services/shift-manager.js';
+import { injectMessage } from '../services/pty-writer.js';
+
+export const taskRoutes = Router();
+
+// GET /api/swarm/tasks — List tasks (filterable by ?stage=&assignedTo=&status=&priority=)
+// No auth required for listing — the UI dashboard polls this endpoint
+// Special value: assignedTo=_self resolves to the requesting agent's name
+taskRoutes.get('/', async (req, res) => {
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' ? v : Array.isArray(v) ? String(v[0]) : undefined;
+
+  let assignedTo = str(req.query.assignedTo);
+  // Resolve _self to the requesting agent's name
+  if (assignedTo === '_self') {
+    const sessionId = req.headers['x-session-id'] as string | undefined;
+    const member = sessionId ? getMember(sessionId) : undefined;
+    assignedTo = member?.agentName || undefined;
+  }
+  const officeId = str(req.query.officeId) || getActiveShift()?.officeId;
+  const filters = {
+    stage: str(req.query.stage),
+    assignedTo,
+    status: str(req.query.status),
+    priority: str(req.query.priority),
+    officeId,
+  };
+
+  // ?ready=true returns only open tasks with all dependencies satisfied
+  if (req.query.ready === 'true') {
+    const tasks = await getReadyTasks(filters);
+    return res.json({ tasks });
+  }
+
+  const tasks = await listTasks(filters);
+  res.json({ tasks });
+});
+
+// POST /api/swarm/tasks — Create a task
+taskRoutes.post('/', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const sender = getMember(senderSessionId)!;
+  const { title, description, stage, assignedTo, priority, context, tags, parentTask, dependsOn, branch, prNumber, prUrl, issueNumber, issueUrl } = req.body;
+  if (!title || !stage) {
+    return res.status(400).json({ error: "Missing 'title' or 'stage' field" });
+  }
+
+  // Validate dependsOn references exist
+  if (Array.isArray(dependsOn)) {
+    for (const depId of dependsOn) {
+      const dep = await getTask(depId);
+      if (!dep) {
+        return res.status(400).json({ error: `Dependency task '${depId}' not found` });
+      }
+    }
+  }
+
+  const task = await createTask({
+    title,
+    description,
+    stage,
+    assignedTo,
+    priority,
+    context,
+    tags,
+    parentTask,
+    dependsOn: Array.isArray(dependsOn) ? dependsOn : undefined,
+    branch,
+    prNumber,
+    prUrl,
+    issueNumber,
+    issueUrl,
+    officeId: getActiveShift()?.officeId,
+    createdBy: sender.agentName || 'Anonymous',
+  });
+
+  res.status(201).json(task);
+});
+
+// PUT /api/swarm/tasks/:id — Update a task
+// Accepts either X-Session-Id (agent auth) or X-Dashboard: true (human operator)
+taskRoutes.put('/:id', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+  const isDashboard = req.headers['x-dashboard'] === 'true';
+  if (!isDashboard && (!senderSessionId || !getMember(senderSessionId))) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl } = req.body;
+  const task = await updateTask(req.params.id, { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl });
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  res.json(task);
+});
+
+// POST /api/swarm/tasks/:id/pick — Self-assign task + set to in-progress
+taskRoutes.post('/:id/pick', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  // Circuit breaker check
+  if (!canAcceptTask(senderSessionId)) {
+    return res.status(429).json({ error: 'Agent circuit breaker is open due to consecutive failures. Wait for cooldown.' });
+  }
+
+  // Gate on dependency satisfaction
+  const { met, blocking } = await areDependenciesMet(req.params.id);
+  if (!met) {
+    return res.status(409).json({ error: 'Task has unmet dependencies', blocking });
+  }
+
+  const sender = getMember(senderSessionId)!;
+  const task = await updateTask(req.params.id, {
+    assignedTo: sender.agentName || 'Anonymous',
+    status: 'in-progress',
+  });
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  // Inject upstream outputs if this task has dependencies
+  if (task.dependsOn && task.dependsOn.length > 0) {
+    const upstreamOutputs: string[] = [];
+    for (const depId of task.dependsOn) {
+      const dep = await getTask(depId);
+      if (dep?.output) {
+        upstreamOutputs.push(`  "${dep.title}" (${depId}): ${dep.output}`);
+      }
+    }
+    if (upstreamOutputs.length > 0) {
+      injectMessage(senderSessionId, `[SWARM SYSTEM]: Upstream task outputs for "${task.title}":\n${upstreamOutputs.join('\n')}`);
+    }
+  }
+
+  res.json(task);
+});
+
+// POST /api/swarm/tasks/:id/done — Mark task done
+taskRoutes.post('/:id/done', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const updates: { status: 'done'; output?: string } = { status: 'done' };
+  if (req.body?.output) updates.output = req.body.output;
+  const task = await updateTask(req.params.id, updates);
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  recordTaskSuccess(senderSessionId);
+
+  // Check for newly unblocked tasks and notify agents
+  const allTasks = await listTasks({ officeId: task.officeId });
+  const nowReady: Array<{ id: string; title: string; assignedTo?: string }> = [];
+  for (const t of allTasks) {
+    if (t.status !== 'open' || !t.dependsOn?.includes(task.id)) continue;
+    const { met } = await areDependenciesMet(t.id);
+    if (met) nowReady.push({ id: t.id, title: t.title, assignedTo: t.assignedTo });
+  }
+
+  if (nowReady.length > 0) {
+    // Notify assigned agents about their unblocked tasks
+    for (const ready of nowReady) {
+      if (ready.assignedTo) {
+        const target = getMemberByName(ready.assignedTo);
+        if (target) {
+          injectMessage(target.sessionId, `[SWARM SYSTEM]: Task "${ready.title}" (${ready.id}) is now unblocked — all dependencies are complete.`);
+        }
+      }
+    }
+    // Notify lead about newly available tasks
+    const leadSessionId = getLeadSessionId();
+    if (leadSessionId) {
+      const titles = nowReady.map(t => `"${t.title}" (${t.id})`).join(', ');
+      injectMessage(leadSessionId, `[SWARM SYSTEM]: ${nowReady.length} task(s) unblocked: ${titles}`);
+    }
+  }
+
+  res.json(task);
+});
+
+// POST /api/swarm/tasks/:id/fail — Mark task as blocked/failed + record failure
+taskRoutes.post('/:id/fail', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const reason = req.body?.reason || 'No reason given';
+  const task = await updateTask(req.params.id, { status: 'blocked' });
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  recordTaskFailure(senderSessionId);
+
+  // Notify lead about the failure
+  const sender = getMember(senderSessionId)!;
+  const leadSessionId = getLeadSessionId();
+  if (leadSessionId && leadSessionId !== senderSessionId) {
+    injectMessage(leadSessionId, `[SWARM SYSTEM]: ${sender.agentName} failed task "${task.title}" (${task.id}): ${reason}`);
+  }
+
+  res.json({ ...task, reason });
+});
+
+// DELETE /api/swarm/tasks/:id — Delete a task
+taskRoutes.delete('/:id', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const deleted = await deleteTask(req.params.id);
+  if (!deleted) return res.status(404).json({ error: 'Task not found' });
+
+  res.json({ deleted: true });
+});

@@ -18,7 +18,7 @@ agentRoutes.get('/:id', async (req, res) => {
 });
 
 agentRoutes.post('/', async (req, res) => {
-  const { name, defaultCliType } = req.body;
+  const { name, defaultCliType, soul, memory, instructions } = req.body;
   if (!name || typeof name !== 'string') {
     return res.status(400).json({ error: 'Name is required' });
   }
@@ -46,6 +46,9 @@ agentRoutes.post('/', async (req, res) => {
     inboxId,
     credentials: {},
     defaultCliType: defaultCliType || 'claude',
+    soul: soul || undefined,
+    memory: memory || undefined,
+    instructions: instructions || undefined,
     createdAt: now,
     updatedAt: now,
   };

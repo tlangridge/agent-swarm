@@ -1,0 +1,19 @@
+{
+  "name": "Core Dev Team",
+  "slots": [
+    { "name": "PM", "functionalRole": "product-manager", "cliType": "claude" },
+    { "name": "Arch", "functionalRole": "architect", "cliType": "claude" },
+    { "name": "Dev-1", "functionalRole": "developer", "cliType": "claude" },
+    { "name": "Dev-2", "functionalRole": "developer", "cliType": "claude" },
+    { "name": "QA", "functionalRole": "tester", "cliType": "claude" },
+    { "name": "Ops", "functionalRole": "devops", "cliType": "bash" }
+  ],
+  "pipeline": [
+    { "name": "requirements", "description": "Gather and define requirements", "assignedRoles": ["product-manager"] },
+    { "name": "design", "description": "Technical architecture and design", "assignedRoles": ["architect"] },
+    { "name": "implementation", "description": "Write the code", "assignedRoles": ["developer"] },
+    { "name": "review", "description": "Code review", "assignedRoles": ["code-reviewer", "architect"] },
+    { "name": "testing", "description": "Write and run tests", "assignedRoles": ["tester"] },
+    { "name": "deployment", "description": "Deploy and verify", "assignedRoles": ["devops"] }
+  ]
+}

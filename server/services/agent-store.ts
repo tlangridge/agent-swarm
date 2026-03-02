@@ -12,6 +12,9 @@ export interface AgentIdentity {
   inboxId: string;
   credentials: Record<string, string>;
   defaultCliType: string | null;
+  soul?: string;
+  memory?: string;
+  instructions?: string;
   createdAt: string;
   updatedAt: string;
 }

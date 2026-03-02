@@ -1,10 +1,13 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
 import { mkdirSync, existsSync, copyFileSync, readdirSync } from 'fs';
 import path from 'path';
-import type { SwarmRole } from './services/swarm-registry.js';
+import type { SwarmRole, FunctionalRole } from './services/swarm-registry.js';
 import { buildSwarmPrompt } from './services/swarm-prompts.js';
+import type { PersonaContext } from './services/swarm-prompts.js';
+import type { PipelineStage } from './services/office-store.js';
 
 export const PORT = parseInt(process.env.PORT || '3010', 10);
 
@@ -26,6 +29,7 @@ export interface PtySession {
   rows: number;
   scrollback: string;
   createdAt: Date;
+  lastDataAt: Date;
 }
 
 export const MAX_SCROLLBACK = 100 * 1024; // 100KB per session
@@ -86,6 +90,8 @@ function getAutonomousArgs(cliType: CliType, permissionMode: PermissionMode): st
       return ['--dangerously-skip-permissions'];
     case 'codex':
       return ['--yolo'];
+    case 'gemini':
+      return ['--yolo'];
     default:
       return [];
   }
@@ -98,11 +104,16 @@ function getCliArgs(
   swarmRole: SwarmRole = 'worker',
   sessionId?: string,
   swarmApiUrl?: string,
+  projectPath?: string,
+  worktreeBranch?: string,
+  functionalRole?: FunctionalRole | null,
+  pipeline?: PipelineStage[],
+  personaCtx?: PersonaContext,
 ): string[] {
   if (cliType === 'claude') {
     const args = getAutonomousArgs(cliType, permissionMode);
     if (agent && sessionId && swarmApiUrl) {
-      const prompt = buildSwarmPrompt(swarmRole, agent, sessionId, swarmApiUrl);
+      const prompt = buildSwarmPrompt(swarmRole, agent, sessionId, swarmApiUrl, projectPath, worktreeBranch, functionalRole, pipeline, personaCtx);
       args.push('--append-system-prompt', prompt);
     } else if (agent) {
       args.push(
@@ -113,6 +124,9 @@ function getCliArgs(
     return args;
   }
   if (cliType === 'codex') {
+    return getAutonomousArgs(cliType, permissionMode);
+  }
+  if (cliType === 'gemini') {
     return getAutonomousArgs(cliType, permissionMode);
   }
   return [];
@@ -128,21 +142,26 @@ export function spawnSession(
   permissionMode: PermissionMode = 'autonomous',
   swarmRole: SwarmRole = 'worker',
   projectPath?: string,
+  functionalRole?: FunctionalRole | null,
+  pipeline?: PipelineStage[],
+  personaCtx?: PersonaContext,
 ): PtySession {
   if (executionMode === 'docker') {
-    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath);
+    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx);
   }
   const effectiveProjectPath = projectPath || process.env.HOME || '/tmp';
 
   const swarmApiUrl = `http://localhost:${PORT}`;
   const shell = resolveCliPath(cliType);
-  const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl);
+  const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl, effectiveProjectPath, undefined, functionalRole, pipeline, personaCtx);
 
   // Build env with full PATH from login shell
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
-  // Ensure common bin dirs are in PATH
+  // Add swarm CLI and common bin dirs to PATH
+  const cliDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli');
   const extraPaths = [
+    cliDir,
     `${process.env.HOME}/.local/bin`,
     '/opt/homebrew/bin',
     '/usr/local/bin',
@@ -162,6 +181,16 @@ export function spawnSession(
     env.AGENT_SWARM_AGENT_ID = agent.id;
     env.AGENT_SWARM_AGENT_NAME = agent.name;
     env.AGENT_SWARM_AGENT_EMAIL = agent.email;
+  }
+
+  // Suppress Codex auto-update on startup
+  // CODEX_MANAGED_BY_NPM tricks Codex into skipping `brew upgrade --cask codex`
+  // which otherwise runs, prints "Please restart Codex", and exits (code 0)
+  if (cliType === 'codex') {
+    env.CODEX_MANAGED_BY_NPM = '1';
+    env.HOMEBREW_NO_AUTO_UPDATE = '1';
+    env.npm_config_prefer_offline = '1';
+    env.NO_UPDATE_NOTIFIER = '1';
   }
 
   const ptyProcess = pty.spawn(shell, args, {
@@ -187,6 +216,7 @@ export function spawnSession(
     rows,
     scrollback: '',
     createdAt: new Date(),
+    lastDataAt: new Date(),
   };
 
   sessions.set(id, session);
@@ -249,6 +279,9 @@ function spawnDockerSession(
   permissionMode: PermissionMode = 'autonomous',
   swarmRole: SwarmRole = 'worker',
   projectPath?: string,
+  functionalRole?: FunctionalRole | null,
+  pipeline?: PipelineStage[],
+  personaCtx?: PersonaContext,
 ): PtySession {
   const containerName = `agent-swarm-${id.slice(0, 8)}`;
   const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode);
@@ -303,9 +336,17 @@ function spawnDockerSession(
     dockerArgs.push('-e', `AGENT_SWARM_AGENT_EMAIL=${agent.email}`);
   }
 
+  // Suppress Codex auto-update on startup
+  if (cliType === 'codex') {
+    dockerArgs.push('-e', 'CODEX_MANAGED_BY_NPM=1');
+    dockerArgs.push('-e', 'HOMEBREW_NO_AUTO_UPDATE=1');
+    dockerArgs.push('-e', 'npm_config_prefer_offline=1');
+    dockerArgs.push('-e', 'NO_UPDATE_NOTIFIER=1');
+  }
+
   // Add swarm prompt to Claude's system prompt inside container
   if (cliType === 'claude' && agent) {
-    const prompt = buildSwarmPrompt(swarmRole, agent, id, swarmApiUrl);
+    const prompt = buildSwarmPrompt(swarmRole, agent, id, swarmApiUrl, undefined, undefined, functionalRole, pipeline, personaCtx);
     cliArgs.push('--append-system-prompt', prompt);
   }
 
@@ -334,6 +375,7 @@ function spawnDockerSession(
     rows,
     scrollback: '',
     createdAt: new Date(),
+    lastDataAt: new Date(),
   };
 
   sessions.set(id, session);
@@ -371,6 +413,14 @@ export function killAll(): void {
     }
   }
   sessions.clear();
+}
+
+export function getSessionByAgentName(name: string): PtySession | undefined {
+  const lower = name.toLowerCase();
+  for (const session of sessions.values()) {
+    if (session.agentName?.toLowerCase() === lower) return session;
+  }
+  return undefined;
 }
 
 // Validate CLI tools at startup

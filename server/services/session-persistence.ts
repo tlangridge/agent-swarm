@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { spawnSession, sessions, MAX_SCROLLBACK } from '../pty-manager.js';
 import type { CliType, ExecutionMode, PermissionMode } from '../pty-manager.js';
 import { addMember, getMembers } from './swarm-registry.js';
-import type { SwarmRole } from './swarm-registry.js';
+import type { SwarmRole, FunctionalRole } from './swarm-registry.js';
 import { setProjectPath, getProjectPath } from '../routes/project.js';
 import { injectMessage, registerSession } from './pty-writer.js';
 
@@ -22,6 +22,7 @@ interface PersistedSession {
   scrollback: string;
   createdAt: string;
   swarmRole: SwarmRole;
+  functionalRole: FunctionalRole | null;
   joinedAt: string;
 }
 
@@ -84,7 +85,7 @@ function buildMemoryDocument(session: PersistedSession, generatedAt: string): st
     `- Generated: ${generatedAt}`,
     `- Session: ${session.id}`,
     `- Agent: ${session.agentName || 'unknown'}${session.agentEmail ? ` <${session.agentEmail}>` : ''}`,
-    `- Role: ${session.swarmRole}`,
+    `- Role: ${session.swarmRole}${session.functionalRole ? ` (${session.functionalRole})` : ''}`,
     `- CLI: ${session.cliType}`,
     `- Execution Mode: ${session.executionMode}`,
     `- Working Directory: ${session.projectPath || 'unknown'}`,
@@ -161,6 +162,7 @@ function serializeState(): PersistedState {
       scrollback: session.scrollback.slice(-MAX_SCROLLBACK),
       createdAt: session.createdAt.toISOString(),
       swarmRole: member?.role ?? 'worker',
+      functionalRole: member?.functionalRole ?? null,
       joinedAt: member?.joinedAt ?? new Date().toISOString(),
     });
   }
@@ -216,6 +218,7 @@ function parseState(raw: string): PersistedState | null {
         scrollback: candidate.scrollback,
         createdAt: candidate.createdAt,
         swarmRole: candidate.swarmRole,
+        functionalRole: (candidate as any).functionalRole ?? null,
         joinedAt: candidate.joinedAt,
       });
     }
@@ -253,7 +256,73 @@ export function schedulePersistState(delayMs = 500): void {
   }, delayMs);
 }
 
-export function restorePersistedState(): { restored: number; failed: number } {
+export interface SavedSessionSummary {
+  id: string;
+  agentId: string | null;
+  agentName: string | null;
+  agentEmail: string | null;
+  projectPath: string | null;
+  cliType: CliType;
+  executionMode: ExecutionMode;
+  permissionMode: PermissionMode;
+  swarmRole: SwarmRole;
+  functionalRole: FunctionalRole | null;
+  createdAt: string;
+  lastActivity: string;
+}
+
+export interface SavedStateInfo {
+  savedAt: string;
+  projectPath: string;
+  sessions: SavedSessionSummary[];
+}
+
+function extractLastActivity(scrollback: string, maxLen = 500): string {
+  const cleaned = stripAnsi(scrollback || '').replace(/\r/g, '').trim();
+  if (!cleaned) return '';
+  const tail = cleaned.slice(-maxLen);
+  const lineStart = tail.indexOf('\n');
+  return lineStart >= 0 ? tail.slice(lineStart + 1).trim() : tail.trim();
+}
+
+export function getSavedSessionSummaries(): SavedStateInfo | null {
+  if (!existsSync(STATE_FILE)) return null;
+  const parsed = parseState(readFileSync(STATE_FILE, 'utf-8'));
+  if (!parsed || parsed.sessions.length === 0) return null;
+
+  return {
+    savedAt: parsed.savedAt,
+    projectPath: parsed.projectPath,
+    sessions: parsed.sessions.map(s => ({
+      id: s.id,
+      agentId: s.agentId,
+      agentName: s.agentName,
+      agentEmail: s.agentEmail,
+      projectPath: s.projectPath,
+      cliType: s.cliType,
+      executionMode: s.executionMode,
+      permissionMode: s.permissionMode,
+      swarmRole: s.swarmRole,
+      functionalRole: s.functionalRole,
+      createdAt: s.createdAt,
+      lastActivity: extractLastActivity(s.scrollback),
+    })),
+  };
+}
+
+export function clearSavedState(): void {
+  if (existsSync(STATE_FILE)) {
+    const emptyState: PersistedState = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      projectPath: getProjectPath(),
+      sessions: [],
+    };
+    writeFileSync(STATE_FILE, `${JSON.stringify(emptyState, null, 2)}\n`, 'utf-8');
+  }
+}
+
+export function restorePersistedState(filterSessionIds?: string[]): { restored: number; failed: number } {
   if (!existsSync(STATE_FILE)) {
     return { restored: 0, failed: 0 };
   }
@@ -266,11 +335,15 @@ export function restorePersistedState(): { restored: number; failed: number } {
 
   setProjectPath(parsed.projectPath);
 
+  const sessionsToRestore = filterSessionIds
+    ? parsed.sessions.filter(s => filterSessionIds.includes(s.id))
+    : parsed.sessions;
+
   let restored = 0;
   let failed = 0;
   let hasLead = false;
 
-  for (const snapshot of parsed.sessions) {
+  for (const snapshot of sessionsToRestore) {
     if (sessions.has(snapshot.id)) continue;
     try {
       const agent = snapshot.agentId ? {
@@ -293,6 +366,7 @@ export function restorePersistedState(): { restored: number; failed: number } {
         snapshot.permissionMode,
         role,
         snapshot.projectPath || undefined,
+        snapshot.functionalRole,
       );
 
       session.scrollback = (snapshot.scrollback || '').slice(-MAX_SCROLLBACK);
@@ -309,6 +383,7 @@ export function restorePersistedState(): { restored: number; failed: number } {
         cliType: snapshot.cliType,
         executionMode: snapshot.executionMode,
         role,
+        functionalRole: snapshot.functionalRole,
         joinedAt: snapshot.joinedAt || new Date().toISOString(),
       });
 

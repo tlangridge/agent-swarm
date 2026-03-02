@@ -99,7 +99,9 @@ projectRoutes.put('/', (req, res) => {
 });
 
 // POST /api/project/pick — open native OS folder picker and store result
-projectRoutes.post('/pick', (_req, res) => {
+// Query param ?save=false to return the path without setting the global project path
+projectRoutes.post('/pick', (req, res) => {
+  const saveGlobal = req.query.save !== 'false';
   const initialPath = projectPath || process.env.HOME || '/';
 
   try {
@@ -113,8 +115,10 @@ projectRoutes.post('/pick', (_req, res) => {
       return res.status(400).json({ error: result.error });
     }
 
-    projectPath = result.projectPath;
-    return res.json({ projectPath, valid: true });
+    if (saveGlobal) {
+      projectPath = result.projectPath;
+    }
+    return res.json({ projectPath: result.projectPath, valid: true });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to pick folder';
     const asNodeErr = err as NodeJS.ErrnoException & { status?: number };

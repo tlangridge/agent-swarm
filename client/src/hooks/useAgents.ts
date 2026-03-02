@@ -42,6 +42,23 @@ export function useAgents() {
     }
   }, []);
 
+  const updateAgent = useCallback(async (id: string, updates: Partial<Pick<AgentIdentity, 'name' | 'defaultCliType' | 'soul' | 'memory' | 'instructions'>>): Promise<AgentIdentity | null> => {
+    try {
+      const res = await fetch(`/api/agents/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      if (!res.ok) return null;
+      const agent: AgentIdentity = await res.json();
+      setAgents(prev => prev.map(a => a.id === id ? agent : a).sort((a, b) => a.name.localeCompare(b.name)));
+      return agent;
+    } catch (err) {
+      console.error('Failed to update agent:', err);
+      return null;
+    }
+  }, []);
+
   const deleteAgentById = useCallback(async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/agents/${id}`, { method: 'DELETE' });
@@ -53,5 +70,5 @@ export function useAgents() {
     }
   }, []);
 
-  return { agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, loading, createAgent, deleteAgent: deleteAgentById, refresh: fetchAgents };
+  return { agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, loading, createAgent, updateAgent, deleteAgent: deleteAgentById, refresh: fetchAgents };
 }

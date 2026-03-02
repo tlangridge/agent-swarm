@@ -15,9 +15,11 @@ export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentNam
   const [target, setTarget] = useState<BroadcastTarget>(leadSessionId ? 'lead' : 'all');
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Switch to 'all' if lead disappears while targeting lead
+  // Default to lead when one becomes available; fall back to all when lead disappears
   useEffect(() => {
-    if (!leadSessionId && target === 'lead') {
+    if (leadSessionId && target === 'all') {
+      setTarget('lead');
+    } else if (!leadSessionId && target === 'lead') {
       setTarget('all');
     }
   }, [leadSessionId, target]);

@@ -1,0 +1,405 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+API="${SWARM_API_URL:-http://localhost:3010}"
+SID="${AGENT_SWARM_SESSION_ID:-}"
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+require_sid() {
+  if [ -z "$SID" ]; then
+    echo "Error: AGENT_SWARM_SESSION_ID is not set." >&2; exit 1
+  fi
+}
+
+json_string() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '"%s"' "$s"
+}
+
+api_get()      { curl -s "$API$1"; }
+api_get_auth() { require_sid; curl -s -H "X-Session-Id: $SID" "$API$1"; }
+api_post()     { require_sid; curl -s -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1"; }
+api_put()      { require_sid; curl -s -X PUT  -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1"; }
+api_delete()   { require_sid; curl -s -X DELETE -H "X-Session-Id: $SID" "$API$1"; }
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+cmd_status() { api_get "/api/swarm/agents"; }
+
+cmd_msg() {
+  local to="${1:-}"; shift || true; local message="$*"
+  if [ -z "$to" ] || [ -z "$message" ]; then
+    echo "Usage: swarm msg <agent> <message>" >&2; exit 1
+  fi
+  api_post "/api/swarm/message" "{\"to\":\"$to\",\"message\":$(json_string "$message")}"
+}
+
+cmd_broadcast() {
+  local message="$*"
+  [ -z "$message" ] && { echo "Usage: swarm broadcast <message>" >&2; exit 1; }
+  api_post "/api/swarm/broadcast" "{\"message\":$(json_string "$message")}"
+}
+
+cmd_activity() {
+  local agent="" lines=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --lines) lines="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  agent="$1"; shift ;;
+    esac
+  done
+  if [ -n "$agent" ]; then
+    local qs=""; [ -n "$lines" ] && qs="?lines=$lines"
+    api_get_auth "/api/swarm/activity/$agent$qs"
+  else
+    api_get_auth "/api/swarm/activity"
+  fi
+}
+
+cmd_spawn() {
+  local name="" task=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --task) task="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  [ -z "$name" ] && name="$1"; shift ;;
+    esac
+  done
+  [ -z "$name" ] && { echo "Usage: swarm spawn <name> [--task \"...\"]" >&2; exit 1; }
+  local body="{\"name\":$(json_string "$name")"
+  [ -n "$task" ] && body="$body,\"task\":$(json_string "$task")"
+  api_post "/api/swarm/spawn" "$body}"
+}
+
+# ── task commands ────────────────────────────────────────────────────────────
+
+cmd_tasks() {
+  local mine="" status="" ready=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mine)   mine="1"; shift ;;
+      --status) status="$2"; shift 2 ;;
+      --ready)  ready="1"; shift ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  shift ;;
+    esac
+  done
+  local qs=""
+  [ -n "$mine" ]   && qs="${qs:+$qs&}assignedTo=_self"
+  [ -n "$status" ] && qs="${qs:+$qs&}status=$status"
+  [ -n "$ready" ]  && qs="${qs:+$qs&}ready=true"
+  [ -n "$qs" ]     && qs="?$qs"
+  if [ -n "$mine" ]; then api_get_auth "/api/swarm/tasks$qs"
+  else api_get "/api/swarm/tasks$qs"; fi
+}
+
+cmd_task() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    create) cmd_task_create "$@" ;;
+    update) cmd_task_update "$@" ;;
+    pick)   cmd_task_pick "$@" ;;
+    done)   cmd_task_done "$@" ;;
+    fail)   cmd_task_fail "$@" ;;
+    deps)   cmd_task_deps "$@" ;;
+    *) echo "Usage: swarm task <create|update|pick|done|fail|deps> [args]" >&2; exit 1 ;;
+  esac
+}
+
+cmd_task_fail() {
+  local id="" reason=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --reason) reason="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  if [ -z "$id" ]; then id="$1"; else reason="${reason:+$reason }$1"; fi; shift ;;
+    esac
+  done
+  [ -z "$id" ] && { echo "Usage: swarm task fail <id> [reason]" >&2; exit 1; }
+  api_post "/api/swarm/tasks/$id/fail" "{\"reason\":$(json_string "${reason:-No reason given}")}"
+}
+
+cmd_task_deps() {
+  local id="${1:-}"
+  [ -z "$id" ] && { echo "Usage: swarm task deps <id>" >&2; exit 1; }
+  api_get "/api/swarm/tasks/$id"
+}
+
+cmd_task_create() {
+  local title="" stage="" assign="" priority="" desc="" branch="" depends=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stage)    stage="$2"; shift 2 ;;
+      --assign)   assign="$2"; shift 2 ;;
+      --priority) priority="$2"; shift 2 ;;
+      --desc)     desc="$2"; shift 2 ;;
+      --branch)   branch="$2"; shift 2 ;;
+      --depends)  depends="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  [ -z "$title" ] && title="$1"; shift ;;
+    esac
+  done
+  [ -z "$title" ] && { echo "Usage: swarm task create <title> [--stage S] [--assign A] [--priority P] [--desc D] [--branch B] [--depends id1,id2]" >&2; exit 1; }
+  local body="{\"title\":$(json_string "$title")"
+  [ -n "$stage" ]    && body="$body,\"stage\":$(json_string "$stage")"
+  [ -n "$assign" ]   && body="$body,\"assignedTo\":$(json_string "$assign")"
+  [ -n "$priority" ] && body="$body,\"priority\":$(json_string "$priority")"
+  [ -n "$desc" ]     && body="$body,\"description\":$(json_string "$desc")"
+  [ -n "$branch" ]   && body="$body,\"branch\":$(json_string "$branch")"
+  if [ -n "$depends" ]; then
+    local dep_array="["
+    local first=1
+    IFS=',' read -ra DEP_IDS <<< "$depends"
+    for dep_id in "${DEP_IDS[@]}"; do
+      [ "$first" = "1" ] && first=0 || dep_array="$dep_array,"
+      dep_array="$dep_array$(json_string "$dep_id")"
+    done
+    dep_array="$dep_array]"
+    body="$body,\"dependsOn\":$dep_array"
+  fi
+  api_post "/api/swarm/tasks" "$body}"
+}
+
+cmd_task_update() {
+  local id="" status="" assign="" stage="" branch="" pr="" pr_url="" issue="" issue_url=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --status)    status="$2"; shift 2 ;;
+      --assign)    assign="$2"; shift 2 ;;
+      --stage)     stage="$2"; shift 2 ;;
+      --branch)    branch="$2"; shift 2 ;;
+      --pr)        pr="$2"; shift 2 ;;
+      --pr-url)    pr_url="$2"; shift 2 ;;
+      --issue)     issue="$2"; shift 2 ;;
+      --issue-url) issue_url="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  [ -z "$id" ] && id="$1"; shift ;;
+    esac
+  done
+  [ -z "$id" ] && { echo "Usage: swarm task update <id> [--status S] [--assign A] [--stage S] [--branch B] [--pr N] [--pr-url U] [--issue N] [--issue-url U]" >&2; exit 1; }
+  local body="{" first=1
+  add_field() { [ "$first" = "1" ] && first=0 || body="$body,"; body="$body\"$1\":$(json_string "$2")"; }
+  add_num() { [ "$first" = "1" ] && first=0 || body="$body,"; body="$body\"$1\":$2"; }
+  [ -n "$status" ]    && add_field "status" "$status"
+  [ -n "$assign" ]    && add_field "assignedTo" "$assign"
+  [ -n "$stage" ]     && add_field "stage" "$stage"
+  [ -n "$branch" ]    && add_field "branch" "$branch"
+  [ -n "$pr" ]        && add_num "prNumber" "$pr"
+  [ -n "$pr_url" ]    && add_field "prUrl" "$pr_url"
+  [ -n "$issue" ]     && add_num "issueNumber" "$issue"
+  [ -n "$issue_url" ] && add_field "issueUrl" "$issue_url"
+  api_put "/api/swarm/tasks/$id" "$body}"
+}
+
+cmd_task_pick() {
+  local id="${1:-}"
+  [ -z "$id" ] && { echo "Usage: swarm task pick <id>" >&2; exit 1; }
+  api_post "/api/swarm/tasks/$id/pick" '{}'
+}
+
+cmd_task_done() {
+  local id="" output=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --output) output="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  [ -z "$id" ] && id="$1"; shift ;;
+    esac
+  done
+  [ -z "$id" ] && { echo "Usage: swarm task done <id> [--output \"...\"]" >&2; exit 1; }
+  if [ -n "$output" ]; then
+    api_post "/api/swarm/tasks/$id/done" "{\"output\":$(json_string "$output")}"
+  else
+    api_post "/api/swarm/tasks/$id/done" '{}'
+  fi
+}
+
+# ── cron commands ────────────────────────────────────────────────────────────
+
+cmd_cron() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    list)   api_get_auth "/api/swarm/crons" ;;
+    create) cmd_cron_create "$@" ;;
+    delete) local id="${1:-}"; [ -z "$id" ] && { echo "Usage: swarm cron delete <id>" >&2; exit 1; }; api_delete "/api/swarm/crons/$id" ;;
+    toggle) local id="${1:-}"; [ -z "$id" ] && { echo "Usage: swarm cron toggle <id>" >&2; exit 1; }; api_post "/api/swarm/crons/$id/toggle" '{}' ;;
+    *) echo "Usage: swarm cron <list|create|delete|toggle> [args]" >&2; exit 1 ;;
+  esac
+}
+
+cmd_cron_create() {
+  local name="" schedule="" prompt="" target_role="" target_agent=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name)         name="$2"; shift 2 ;;
+      --schedule)     schedule="$2"; shift 2 ;;
+      --prompt)       prompt="$2"; shift 2 ;;
+      --target-role)  target_role="$2"; shift 2 ;;
+      --target-agent) target_agent="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  shift ;;
+    esac
+  done
+  if [ -z "$name" ] || [ -z "$schedule" ] || [ -z "$prompt" ]; then
+    echo "Usage: swarm cron create --name N --schedule S --prompt P [--target-role R] [--target-agent A]" >&2; exit 1
+  fi
+  local body="{\"name\":$(json_string "$name"),\"schedule\":$(json_string "$schedule"),\"prompt\":$(json_string "$prompt")"
+  [ -n "$target_role" ]  && body="$body,\"targetRole\":$(json_string "$target_role")"
+  [ -n "$target_agent" ] && body="$body,\"targetAgent\":$(json_string "$target_agent")"
+  api_post "/api/swarm/crons" "$body}"
+}
+
+# ── file commands ────────────────────────────────────────────────────────────
+
+cmd_files() {
+  local fpath="${1:-}"
+  if [ -n "$fpath" ]; then api_get_auth "/api/swarm/files/$fpath"
+  else api_get_auth "/api/swarm/files"; fi
+}
+
+cmd_read() {
+  local fpath="${1:-}"
+  [ -z "$fpath" ] && { echo "Usage: swarm read <path>" >&2; exit 1; }
+  api_get_auth "/api/swarm/files/$fpath"
+}
+
+cmd_write() {
+  local fpath="" content=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --content) content="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  [ -z "$fpath" ] && fpath="$1"; shift ;;
+    esac
+  done
+  [ -z "$fpath" ] && { echo "Usage: swarm write <path> --content \"...\" (or pipe via stdin)" >&2; exit 1; }
+  if [ -z "$content" ]; then
+    [ -t 0 ] && { echo "Error: No --content and stdin is a terminal. Pipe content or use --content." >&2; exit 1; }
+    content="$(cat)"
+  fi
+  require_sid
+  curl -s -X PUT -H "Content-Type: application/json" -H "X-Session-Id: $SID" \
+    -d "{\"content\":$(json_string "$content")}" "$API/api/swarm/files/$fpath"
+}
+
+cmd_append() {
+  local fpath="" content=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --content) content="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  [ -z "$fpath" ] && fpath="$1"; shift ;;
+    esac
+  done
+  [ -z "$fpath" ] && { echo "Usage: swarm append <path> --content \"...\" (or pipe via stdin)" >&2; exit 1; }
+  if [ -z "$content" ]; then
+    [ -t 0 ] && { echo "Error: No --content and stdin is a terminal. Pipe content or use --content." >&2; exit 1; }
+    content="$(cat)"
+  fi
+  require_sid
+  curl -s -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" \
+    -d "{\"content\":$(json_string "$content")}" "$API/api/swarm/files/$fpath"
+}
+
+cmd_log() {
+  local message="$*"
+  [ -z "$message" ] && { echo "Usage: swarm log <message>" >&2; exit 1; }
+  api_post "/api/swarm/log" "{\"message\":$(json_string "$message")}"
+}
+
+cmd_context() { api_get_auth "/api/swarm/files/context.md"; }
+
+# ── help ─────────────────────────────────────────────────────────────────────
+
+cmd_help() {
+  local topic="${1:-}"
+  if [ -z "$topic" ]; then
+    cat <<'EOF'
+swarm -- CLI for the Agent Swarm REST API
+
+COMMANDS
+  status                           Show team members, roles, shift info
+  msg <agent> <message>            Send message to an agent
+  broadcast <message>              Broadcast to all agents
+  activity [agent] [--lines N]     View agent terminal activity
+  spawn <name> [--task "..."]      Spawn a new agent
+
+  tasks [--mine] [--status X] [--ready]  List tasks (--ready: only dep-satisfied)
+  task create <title> [opts]       Create a task (--depends id1,id2)
+  task update <id> [opts]          Update a task
+  task pick <id>                   Assign to self, mark in-progress
+  task done <id> [--output "..."]  Mark task done with optional output
+  task fail <id> [reason]          Mark task as blocked/failed
+  task deps <id>                   Show task dependencies
+
+  cron list                        List cron jobs
+  cron create [opts]               Create a cron job
+  cron delete <id>                 Delete a cron job
+  cron toggle <id>                 Enable/disable a cron job
+
+  files [path]                     List or browse shared files
+  read <path>                      Read a shared file
+  write <path> --content "..."     Write a shared file (or pipe stdin)
+  append <path> --content "..."    Append to a shared file (or pipe stdin)
+  log <message>                    Append to shift activity log
+  context                          Read context.md
+
+  help [command]                   Show help
+
+ENVIRONMENT
+  SWARM_API_URL              Default: http://localhost:3010
+  AGENT_SWARM_SESSION_ID     Required for authenticated endpoints
+EOF
+    return
+  fi
+  case "$topic" in
+    status)    echo "swarm status"; echo "  GET /api/swarm/agents -- list active members, available agents, lead session. No auth." ;;
+    msg)       echo "swarm msg <agent> <message>"; echo "  POST /api/swarm/message -- send direct message (injected into target terminal). Requires SID." ;;
+    broadcast) echo "swarm broadcast <message>"; echo "  POST /api/swarm/broadcast -- message all other agents. Requires SID." ;;
+    activity)  echo "swarm activity [agent] [--lines N]"; echo "  All agents: GET /api/swarm/activity"; echo "  One agent:  GET /api/swarm/activity/<name>?lines=N (default 50, max 200). Requires SID." ;;
+    spawn)     echo "swarm spawn <name> [--task \"...\"]"; echo "  POST /api/swarm/spawn -- spawn or relaunch agent. --task sends initial message. Requires SID." ;;
+    tasks)     echo "swarm tasks [--mine] [--status X]"; echo "  GET /api/swarm/tasks -- --mine passes assignedTo=_self, --status filters (open|in-progress|blocked|done)." ;;
+    task)      echo "swarm task create <title> [--stage S] [--assign A] [--priority P] [--desc D] [--branch B] [--depends id1,id2]"
+               echo "swarm task update <id> [--status S] [--assign A] [--stage S] [--branch B] [--pr N] [--pr-url U] [--issue N] [--issue-url U]"
+               echo "swarm task pick <id>   -- assign to self + in-progress (blocked if deps unmet)"
+               echo "swarm task done <id> [--output \"...\"]  -- mark done with optional output for downstream tasks"
+               echo "swarm task fail <id> [reason]  -- mark task blocked/failed"
+               echo "swarm task deps <id>   -- show task details and dependencies" ;;
+    cron)      echo "swarm cron list"; echo "swarm cron create --name N --schedule S --prompt P [--target-role R] [--target-agent A]"
+               echo "swarm cron delete <id>"; echo "swarm cron toggle <id>" ;;
+    files)     echo "swarm files [path]"; echo "  GET /api/swarm/files[/<path>] -- list or browse shared files." ;;
+    read)      echo "swarm read <path>"; echo "  GET /api/swarm/files/<path> -- read file contents." ;;
+    write)     echo "swarm write <path> --content \"...\""; echo "  PUT /api/swarm/files/<path> -- also reads stdin: echo hi | swarm write f.txt" ;;
+    append)    echo "swarm append <path> --content \"...\""; echo "  POST /api/swarm/files/<path> -- atomically append to a file. Also reads stdin." ;;
+    log)       echo "swarm log <message>"; echo "  POST /api/swarm/log -- append to shift activity log." ;;
+    context)   echo "swarm context"; echo "  Shortcut for: swarm read context.md" ;;
+    help)      echo "swarm help [command]" ;;
+    *) echo "Unknown command: $topic. Run 'swarm help' for a list." >&2; exit 1 ;;
+  esac
+}
+
+# ── main dispatch ────────────────────────────────────────────────────────────
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  status)    cmd_status "$@" ;;
+  msg)       cmd_msg "$@" ;;
+  broadcast) cmd_broadcast "$@" ;;
+  activity)  cmd_activity "$@" ;;
+  spawn)     cmd_spawn "$@" ;;
+  tasks)     cmd_tasks "$@" ;;
+  task)      cmd_task "$@" ;;
+  cron)      cmd_cron "$@" ;;
+  files)     cmd_files "$@" ;;
+  read)      cmd_read "$@" ;;
+  write)     cmd_write "$@" ;;
+  append)    cmd_append "$@" ;;
+  log)       cmd_log "$@" ;;
+  context)   cmd_context ;;
+  help)      cmd_help "$@" ;;
+  *) echo "Unknown command: $cmd. Run 'swarm help' for usage." >&2; exit 1 ;;
+esac

@@ -6,10 +6,13 @@ interface HeaderProps {
   projectPath: string;
   projectPathValid: boolean | null;
   pickingProjectPath: boolean;
+  workspaceMode?: 'dashboard' | 'grid';
   onAddTerminal: () => void;
   onOpenSettings: () => void;
+  onManageAgents: () => void;
   onSetProjectPath: (path: string) => void;
   onPickProjectPath: () => void;
+  onToggleWorkspaceMode?: () => void;
 }
 
 export default function Header({
@@ -20,8 +23,11 @@ export default function Header({
   pickingProjectPath,
   onAddTerminal,
   onOpenSettings,
+  onManageAgents,
   onSetProjectPath,
   onPickProjectPath,
+  workspaceMode,
+  onToggleWorkspaceMode,
 }: HeaderProps) {
   const [editing, setEditing] = useState(false);
   const [inputValue, setInputValue] = useState(projectPath);
@@ -113,9 +119,31 @@ export default function Header({
       </div>
 
       <div className="header-right">
+        {onToggleWorkspaceMode && sessionCount > 0 && (
+          <button
+            className="workspace-mode-toggle"
+            onClick={onToggleWorkspaceMode}
+            title={workspaceMode === 'dashboard' ? 'Switch to Grid view' : 'Switch to Dashboard view'}
+          >
+            {workspaceMode === 'dashboard' ? (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3zm-8 8A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5v-3z"/>
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 2a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V2zm0 5.5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1v-2zm0 5.5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1v-2z"/>
+              </svg>
+            )}
+          </button>
+        )}
         <span className="session-count">{sessionCount} session{sessionCount !== 1 ? 's' : ''}</span>
         <button className="add-btn" onClick={onAddTerminal}>
           + Add Agent
+        </button>
+        <button className="settings-btn" onClick={onManageAgents} title="Manage Agent Identities">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M7 14s-1 0-1-1 1-4 5-4 5 3 5 4-1 1-1 1H7zm4-6a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2.5 9.5A.5.5 0 0 1 3 9h1a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-3A.5.5 0 0 1 3 6h1a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-3A.5.5 0 0 1 3 3h1a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/>
+          </svg>
         </button>
         <button className="settings-btn" onClick={onOpenSettings} title="Settings">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">

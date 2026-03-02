@@ -1,8 +1,5 @@
 node_modules/
 client/dist/
 .env
-data/agents/
-data/docker/
-data/session-state.json
-data/session-state.json.tmp
+data/
 *.DS_Store
