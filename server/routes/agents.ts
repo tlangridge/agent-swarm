@@ -67,6 +67,10 @@ agentRoutes.put('/:id', async (req, res) => {
     id: existing.id, // prevent id change
     updatedAt: new Date().toISOString(),
   };
+  // Allow clearing context fields by sending null
+  for (const key of ['soul', 'memory', 'instructions'] as const) {
+    if (req.body[key] === null) updated[key] = undefined;
+  }
 
   // Convert null values to undefined so they're stripped from the stored JSON
   for (const key of ['soul', 'memory', 'instructions'] as const) {

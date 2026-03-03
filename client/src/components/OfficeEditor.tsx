@@ -125,12 +125,18 @@ export default function OfficeEditor({ agents, initialOffice, onSave, onClose }:
     if (slots.some(s => !s.name.trim())) return;
     const context = {
       projectPath: projectPath.trim() || undefined,
-      soul: teamSoul.trim() || undefined,
-      memory: teamMemory.trim() || undefined,
-      instructions: teamInstructions.trim() || undefined,
+      soul: teamSoul.trim() || null,
+      memory: teamMemory.trim() || null,
+      instructions: teamInstructions.trim() || null,
       cronJobs: cronJobs.length > 0 ? cronJobs : undefined,
     };
-    onSave(name.trim(), slots, includePipeline ? (initialOffice?.pipeline ?? DEFAULT_PIPELINE) : undefined, context);
+    const cleanedSlots = slots.map(s => ({
+      ...s,
+      soul: s.soul?.trim() || undefined,
+      memory: s.memory?.trim() || undefined,
+      instructions: s.instructions?.trim() || undefined,
+    }));
+    onSave(name.trim(), cleanedSlots, includePipeline ? (initialOffice?.pipeline ?? DEFAULT_PIPELINE) : undefined, context as any);
   }
 
   function addCronJob() {

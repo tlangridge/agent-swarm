@@ -94,6 +94,13 @@ export default function AgentDetail({ agent, offices, onUpdate, onDelete, onUpda
     setEditingAgentContext(true);
   };
 
+  const clearAgentContext = async () => {
+    if (!window.confirm(`Clear all context (soul, memory, instructions) from "${agent.name}"?`)) return;
+    setSavingAgentContext(true);
+    await onUpdate(agent.id, { soul: null, memory: null, instructions: null } as any);
+    setSavingAgentContext(false);
+  };
+
   const cancelAgentContextEdit = () => {
     setEditingAgentContext(false);
   };
@@ -318,13 +325,25 @@ export default function AgentDetail({ agent, offices, onUpdate, onDelete, onUpda
           <div className="agent-detail-office-card-header">
             <span className="agent-detail-office-name">Soul / Memory / Instructions</span>
             {!editingAgentContext && (
-              <button
-                className="office-btn"
-                style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 8px' }}
-                onClick={startAgentContextEdit}
-              >
-                Edit Context
-              </button>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                {(agent.soul || agent.memory || agent.instructions) && (
+                  <button
+                    className="office-btn danger-text"
+                    style={{ fontSize: 11, padding: '2px 8px' }}
+                    onClick={clearAgentContext}
+                    disabled={savingAgentContext}
+                  >
+                    {savingAgentContext ? 'Clearing...' : 'Clear'}
+                  </button>
+                )}
+                <button
+                  className="office-btn"
+                  style={{ fontSize: 11, padding: '2px 8px' }}
+                  onClick={startAgentContextEdit}
+                >
+                  Edit Context
+                </button>
+              </div>
             )}
           </div>
 
@@ -365,6 +384,13 @@ export default function AgentDetail({ agent, offices, onUpdate, onDelete, onUpda
               </div>
               <div className="agent-detail-office-edit-actions">
                 <button className="office-btn" onClick={cancelAgentContextEdit} disabled={savingAgentContext}>Cancel</button>
+                <button
+                  className="office-btn danger-text"
+                  onClick={() => { setEditAgentSoul(''); setEditAgentMemory(''); setEditAgentInstructions(''); }}
+                  disabled={savingAgentContext || (!editAgentSoul && !editAgentMemory && !editAgentInstructions)}
+                >
+                  Clear All
+                </button>
                 <button className="office-btn primary" onClick={saveAgentContext} disabled={savingAgentContext}>
                   {savingAgentContext ? 'Saving...' : 'Save Context'}
                 </button>
