@@ -3,7 +3,7 @@ import { FUNCTIONAL_ROLE_COLORS, FUNCTIONAL_ROLE_LABELS } from '../types';
 
 interface Props {
   shift: ShiftState;
-  onBadgeOut: () => void;
+  onBadgeOut: (officeId: string) => void;
 }
 
 export default function ShiftStatusBar({ shift, onBadgeOut }: Props) {
@@ -58,7 +58,7 @@ export default function ShiftStatusBar({ shift, onBadgeOut }: Props) {
         const msg = activeCount > 0
           ? `End shift "${shift.officeName}" and kill ${activeCount} active agent${activeCount !== 1 ? 's' : ''}?`
           : `End shift "${shift.officeName}"?`;
-        if (window.confirm(msg)) onBadgeOut();
+        if (window.confirm(msg)) onBadgeOut(shift.officeId);
       }}>
         {shift.status === 'review' ? 'Approve & End Shift' : 'End Shift'}
       </button>

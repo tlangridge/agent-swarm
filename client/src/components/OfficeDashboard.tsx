@@ -5,7 +5,7 @@ import OfficeEditor from './OfficeEditor';
 
 interface Props {
   offices: Office[];
-  activeShift: ShiftState | null;
+  activeShifts: Map<string, ShiftState>;
   agents: AgentIdentity[];
   onBadgeIn: (officeId: string) => void;
   onBadgeOut: (officeId: string) => void;
@@ -56,7 +56,7 @@ function RoleBadge({ role }: { role: FunctionalRole }) {
   );
 }
 
-export default function OfficeDashboard({ offices, activeShift, agents, onBadgeIn, onBadgeOut, onCreateOffice, onUpdateOffice, onDeleteOffice, onRefresh, onSelectOffice }: Props) {
+export default function OfficeDashboard({ offices, activeShifts, agents, onBadgeIn, onBadgeOut, onCreateOffice, onUpdateOffice, onDeleteOffice, onRefresh, onSelectOffice }: Props) {
   const [showEditor, setShowEditor] = useState(false);
   const [editingOffice, setEditingOffice] = useState<Office | null>(null);
   const [deletingOffice, setDeletingOffice] = useState<Office | null>(null);
@@ -74,38 +74,44 @@ export default function OfficeDashboard({ offices, activeShift, agents, onBadgeI
         </button>
       </div>
 
-      {activeShift && activeShift.status !== 'ended' && (
-        <div className="office-shift-active">
-          <div className="office-shift-title">
-            <span className="office-shift-dot active" />
-            Shift Active — {activeShift.officeName}
-          </div>
-          <div className="office-shift-slots">
-            {activeShift.slots.map((slot, i) => (
-              <div key={i} className="office-shift-slot">
-                <SlotStatusDot status={slot.status} />
-                <span>{slot.name}</span>
-                <RoleBadge role={slot.functionalRole} />
-                {slot.error && <span className="office-shift-error">{slot.error}</span>}
+      {activeShifts.size > 0 && (
+        <div className="office-shifts-active">
+          {Array.from(activeShifts.values())
+            .filter(shift => shift.status !== 'ended')
+            .map(shift => (
+              <div key={shift.officeId} className="office-shift-active">
+                <div className="office-shift-title">
+                  <span className="office-shift-dot active" />
+                  Shift Active — {shift.officeName}
+                </div>
+                <div className="office-shift-slots">
+                  {shift.slots.map((slot, i) => (
+                    <div key={i} className="office-shift-slot">
+                      <SlotStatusDot status={slot.status} />
+                      <span>{slot.name}</span>
+                      <RoleBadge role={slot.functionalRole} />
+                      {slot.error && <span className="office-shift-error">{slot.error}</span>}
+                    </div>
+                  ))}
+                </div>
+                <button
+                  className="office-btn danger"
+                  onClick={() => {
+                    const activeCount = shift.slots.filter(s => s.status === 'active').length;
+                    const msg = activeCount > 0
+                      ? `End shift "${shift.officeName}" and kill ${activeCount} active agent${activeCount !== 1 ? 's' : ''}?`
+                      : `End shift "${shift.officeName}"?`;
+                    if (window.confirm(msg)) onBadgeOut(shift.officeId);
+                  }}
+                >
+                  End Shift
+                </button>
               </div>
             ))}
-          </div>
-          <button
-            className="office-btn danger"
-            onClick={() => {
-              const activeCount = activeShift.slots.filter(s => s.status === 'active').length;
-              const msg = activeCount > 0
-                ? `End shift "${activeShift.officeName}" and kill ${activeCount} active agent${activeCount !== 1 ? 's' : ''}?`
-                : `End shift "${activeShift.officeName}"?`;
-              if (window.confirm(msg)) onBadgeOut(activeShift.officeId);
-            }}
-          >
-            End Shift
-          </button>
         </div>
       )}
 
-      {offices.length === 0 && !activeShift && (
+      {offices.length === 0 && activeShifts.size === 0 && (
         <div className="office-empty">
           <p>No offices yet. Create one to get started.</p>
           <p style={{ color: '#565f89', fontSize: 13 }}>
@@ -117,7 +123,7 @@ export default function OfficeDashboard({ offices, activeShift, agents, onBadgeI
       {offices.length > 0 && (
         <div className="office-list">
           {offices.map(office => {
-            const isActive = activeShift?.officeId === office.id && activeShift.status !== 'ended';
+            const isActive = activeShifts.has(office.id) && activeShifts.get(office.id)!.status !== 'ended';
             return (
               <div key={office.id} className="office-card">
                 <div className="office-card-header">
@@ -171,7 +177,6 @@ export default function OfficeDashboard({ offices, activeShift, agents, onBadgeI
                     <button
                       className="office-btn primary"
                       onClick={() => onBadgeIn(office.id)}
-                      disabled={!!activeShift && activeShift.status !== 'ended'}
                     >
                       Start Shift
                     </button>

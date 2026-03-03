@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import { listOffices, getOffice, saveOffice, deleteOffice } from '../services/office-store.js';
-import { badgeIn, badgeOut, getActiveShift, markReadyForReview } from '../services/shift-manager.js';
+import { badgeIn, badgeOut, getActiveShift, getActiveShifts, markReadyForReview } from '../services/shift-manager.js';
 import { swarmEvents } from '../services/swarm-registry.js';
 
 export const officeRoutes = Router();
@@ -9,7 +9,7 @@ export const officeRoutes = Router();
 // GET /api/offices — List all offices
 officeRoutes.get('/', async (_req, res) => {
   const offices = await listOffices();
-  res.json({ offices, activeShift: getActiveShift() });
+  res.json({ offices, activeShifts: getActiveShifts() });
 });
 
 // GET /api/offices/:id — Get a single office
@@ -108,8 +108,8 @@ officeRoutes.post('/:id/badge-in', async (req, res) => {
 });
 
 // POST /api/offices/:id/badge-out — End a shift
-officeRoutes.post('/:id/badge-out', async (_req, res) => {
-  const shift = await badgeOut();
+officeRoutes.post('/:id/badge-out', async (req, res) => {
+  const shift = await badgeOut(req.params.id);
   if (!shift) return res.status(400).json({ error: 'No active shift to end' });
   res.json({ ended: true, shift });
 });
@@ -136,7 +136,7 @@ officeRoutes.post('/:id/ready-for-review', (req, res) => {
 
 // GET /api/offices/:id/shift — Get current shift status
 officeRoutes.get('/:id/shift', (req, res) => {
-  const shift = getActiveShift();
+  const shift = getActiveShift(req.params.id);
   if (!shift || shift.officeId !== req.params.id) {
     return res.json({ active: false });
   }

@@ -15,9 +15,11 @@ interface ActiveTimer {
   intervalMs: number;
 }
 
-let activeTimers: ActiveTimer[] = [];
-let schedulerRunning = false;
-let currentOfficeId: string | null = null;
+interface OfficeScheduler {
+  timers: ActiveTimer[];
+  running: boolean;
+}
+const schedulers = new Map<string, OfficeScheduler>();
 
 /**
  * Parse a simple interval schedule string into milliseconds.
@@ -52,11 +54,11 @@ export function startScheduler(
   resolveTargets: ResolveTargetsFn,
   injectFn: InjectFn,
 ): void {
-  if (schedulerRunning) {
-    stopScheduler();
-  }
+  stopScheduler(office.id);
 
-  currentOfficeId = office.id;
+  const sched: OfficeScheduler = { timers: [], running: true };
+  schedulers.set(office.id, sched);
+
   const jobs = office.cronJobs ?? [];
 
   for (const job of jobs) {
@@ -83,49 +85,54 @@ export function startScheduler(
       job.lastRun = new Date().toISOString();
 
       // Update nextRun on our timer record
-      const timer = activeTimers.find(t => t.jobId === job.id);
+      const timer = sched.timers.find(t => t.jobId === job.id);
       if (timer) {
         timer.nextRun = new Date(Date.now() + timer.intervalMs);
       }
 
       // Persist to disk
-      if (currentOfficeId) {
-        try {
-          const freshOffice = await getOffice(currentOfficeId);
-          if (freshOffice) {
-            const cronJob = freshOffice.cronJobs?.find(c => c.id === job.id);
-            if (cronJob) {
-              cronJob.lastRun = job.lastRun;
-              await saveOffice(freshOffice);
-            }
+      try {
+        const freshOffice = await getOffice(office.id);
+        if (freshOffice) {
+          const cronJob = freshOffice.cronJobs?.find(c => c.id === job.id);
+          if (cronJob) {
+            cronJob.lastRun = job.lastRun;
+            await saveOffice(freshOffice);
           }
-        } catch (err) {
-          console.error(`cron-scheduler: failed to persist lastRun for job "${job.name}":`, err);
         }
+      } catch (err) {
+        console.error(`cron-scheduler: failed to persist lastRun for job "${job.name}":`, err);
       }
     }, intervalMs);
 
-    activeTimers.push({ jobId: job.id, name: job.name, schedule: job.schedule, enabled: job.enabled, interval, nextRun, intervalMs });
+    sched.timers.push({ jobId: job.id, name: job.name, schedule: job.schedule, enabled: job.enabled, interval, nextRun, intervalMs });
   }
 
-  schedulerRunning = true;
-  const enabledCount = activeTimers.length;
+  const enabledCount = sched.timers.length;
   const totalCount = jobs.length;
-  console.log(`cron-scheduler: started ${enabledCount} job(s) of ${totalCount} total`);
+  console.log(`cron-scheduler: started ${enabledCount} job(s) of ${totalCount} total for office ${office.id}`);
 }
 
 /**
  * Stop the scheduler and clear all active intervals.
  * Called during badge-out.
  */
-export function stopScheduler(): void {
-  for (const timer of activeTimers) {
-    clearInterval(timer.interval);
+export function stopScheduler(officeId?: string): void {
+  if (officeId) {
+    const sched = schedulers.get(officeId);
+    if (sched) {
+      for (const timer of sched.timers) clearInterval(timer.interval);
+      schedulers.delete(officeId);
+      console.log(`cron-scheduler: stopped for office ${officeId}`);
+    }
+  } else {
+    // Backward compat: clear all
+    for (const sched of schedulers.values()) {
+      for (const timer of sched.timers) clearInterval(timer.interval);
+    }
+    schedulers.clear();
+    console.log('cron-scheduler: stopped all');
   }
-  activeTimers = [];
-  schedulerRunning = false;
-  currentOfficeId = null;
-  console.log('cron-scheduler: stopped');
 }
 
 /**
@@ -137,14 +144,14 @@ export function reloadScheduler(
   resolveTargets: ResolveTargetsFn,
   injectFn: InjectFn,
 ): void {
-  stopScheduler();
+  stopScheduler(office.id);
   startScheduler(office, resolveTargets, injectFn);
 }
 
 /**
  * Get the current status of the scheduler and all tracked jobs.
  */
-export function getSchedulerStatus(): {
+export function getSchedulerStatus(officeId?: string): {
   running: boolean;
   jobs: Array<{
     id: string;
@@ -155,16 +162,35 @@ export function getSchedulerStatus(): {
     nextRun?: string;
   }>;
 } {
-  return {
-    running: schedulerRunning,
-    jobs: activeTimers.map(timer => ({
-      id: timer.jobId,
-      name: timer.name,
-      schedule: timer.schedule,
-      enabled: timer.enabled,
-      nextRun: timer.nextRun.toISOString(),
-    })),
-  };
+  if (officeId) {
+    const sched = schedulers.get(officeId);
+    return {
+      running: sched?.running ?? false,
+      jobs: (sched?.timers ?? []).map(timer => ({
+        id: timer.jobId,
+        name: timer.name,
+        schedule: timer.schedule,
+        enabled: timer.enabled,
+        nextRun: timer.nextRun.toISOString(),
+      })),
+    };
+  }
+  // Backward compat: return first running scheduler
+  for (const sched of schedulers.values()) {
+    if (sched.running) {
+      return {
+        running: true,
+        jobs: sched.timers.map(timer => ({
+          id: timer.jobId,
+          name: timer.name,
+          schedule: timer.schedule,
+          enabled: timer.enabled,
+          nextRun: timer.nextRun.toISOString(),
+        })),
+      };
+    }
+  }
+  return { running: false, jobs: [] };
 }
 
 /**
@@ -181,12 +207,13 @@ export function getSchedulerStatusWithOffice(office: Office): {
     nextRun?: string;
   }>;
 } {
+  const sched = schedulers.get(office.id);
   const cronJobs = office.cronJobs ?? [];
 
   return {
-    running: schedulerRunning,
+    running: sched?.running ?? false,
     jobs: cronJobs.map(job => {
-      const timer = activeTimers.find(t => t.jobId === job.id);
+      const timer = sched?.timers.find(t => t.jobId === job.id);
       return {
         id: job.id,
         name: job.name,

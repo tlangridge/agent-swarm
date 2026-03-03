@@ -10,6 +10,7 @@ import { injectMessage, registerSession } from './pty-writer.js';
 
 interface PersistedSession {
   id: string;
+  officeId: string | null;
   agentId: string | null;
   agentName: string | null;
   agentEmail: string | null;
@@ -150,6 +151,7 @@ function serializeState(): PersistedState {
     const member = membersBySessionId.get(session.id);
     persistedSessions.push({
       id: session.id,
+      officeId: session.officeId ?? null,
       agentId: session.agentId,
       agentName: session.agentName,
       agentEmail: session.agentEmail,
@@ -206,6 +208,7 @@ function parseState(raw: string): PersistedState | null {
       }
       sessionsList.push({
         id: candidate.id,
+        officeId: (candidate as any).officeId ?? null,
         agentId: candidate.agentId,
         agentName: candidate.agentName,
         agentEmail: candidate.agentEmail,
@@ -367,6 +370,10 @@ export function restorePersistedState(filterSessionIds?: string[]): { restored: 
         role,
         snapshot.projectPath || undefined,
         snapshot.functionalRole,
+        undefined, // pipeline
+        undefined, // personaCtx
+        undefined, // worktreeBranch
+        snapshot.officeId,
       );
 
       session.scrollback = (snapshot.scrollback || '').slice(-MAX_SCROLLBACK);
@@ -377,6 +384,7 @@ export function restorePersistedState(filterSessionIds?: string[]): { restored: 
 
       addMember({
         sessionId: snapshot.id,
+        officeId: snapshot.officeId ?? '',
         agentId: snapshot.agentId,
         agentName: snapshot.agentName,
         agentEmail: snapshot.agentEmail,

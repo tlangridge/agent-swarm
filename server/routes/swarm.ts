@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { nanoid } from 'nanoid';
-import { getMembers, getMember, getMemberByName, getLeadSessionId, addMember, swarmEvents } from '../services/swarm-registry.js';
+import { getMembers, getMember, getMemberByName, getMembersByOffice, getLeadSessionId, addMember, swarmEvents } from '../services/swarm-registry.js';
 import type { SwarmRole, FunctionalRole } from '../services/swarm-registry.js';
 import { listAgents, saveAgent } from '../services/agent-store.js';
 import { provisionInbox } from '../services/agentmail.js';
@@ -11,7 +11,7 @@ import { buildOrientationMessage } from '../services/swarm-prompts.js';
 import { getProjectPath } from './project.js';
 import { injectMessage } from '../services/pty-writer.js';
 import { getStructuredStatus } from '../services/activity-parser.js';
-import { getActiveShift, spawnSlotOnDemand } from '../services/shift-manager.js';
+import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand } from '../services/shift-manager.js';
 
 export const swarmRoutes = Router();
 
@@ -26,7 +26,9 @@ swarmRoutes.get('/activity', (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
-  const agents = getMembers().map(member => {
+  const sender = getMember(senderSessionId)!;
+  const officeMembers = sender.officeId ? getMembersByOffice(sender.officeId) : getMembers();
+  const agents = officeMembers.map(member => {
     const session = sessions.get(member.sessionId);
     if (!session) return { name: member.agentName, role: member.functionalRole, lastLines: [], idleSeconds: -1 };
 
@@ -89,7 +91,8 @@ swarmRoutes.post('/summon', async (req, res) => {
     return res.status(400).json({ error: "Missing 'name' field" });
   }
 
-  const shift = getActiveShift();
+  const summonSender = getMember(senderSessionId);
+  const shift = getShiftBySessionId(senderSessionId) ?? getActiveShift(summonSender?.officeId);
   if (!shift) {
     return res.status(400).json({ error: 'No active shift' });
   }
@@ -101,7 +104,7 @@ swarmRoutes.post('/summon', async (req, res) => {
     return res.status(404).json({ error: `No pending slot for "${name}"` });
   }
 
-  const result = await spawnSlotOnDemand(pendingSlot.slotIndex);
+  const result = await spawnSlotOnDemand(pendingSlot.slotIndex, shift.officeId);
   if (!result) {
     return res.status(500).json({ error: 'Failed to spawn slot' });
   }
@@ -166,12 +169,13 @@ swarmRoutes.post('/broadcast', (req, res) => {
     return res.status(400).json({ error: "Missing 'message' field" });
   }
 
-  const sender = getMember(senderSessionId)!;
-  const senderName = sender.agentName || 'Anonymous';
+  const broadcastSender = getMember(senderSessionId)!;
+  const senderName = broadcastSender.agentName || 'Anonymous';
   const formatted = `[SWARM from ${senderName}]: ${message}`;
 
   let recipientCount = 0;
-  for (const member of getMembers()) {
+  const broadcastMembers = broadcastSender.officeId ? getMembersByOffice(broadcastSender.officeId) : getMembers();
+  for (const member of broadcastMembers) {
     if (member.sessionId === senderSessionId) continue;
     const session = sessions.get(member.sessionId);
     if (session) {
@@ -256,8 +260,10 @@ swarmRoutes.post('/spawn', async (req, res) => {
 
     // Spawn PTY session
     const sessionId = randomUUID();
+    const spawnSender = getMember(senderSessionId);
+    const spawnOfficeId = spawnSender?.officeId || '';
     try {
-      spawnSession(sessionId, cliType, 80, 24, agent, 'local', 'autonomous', swarmRole, getProjectPath() || undefined, functionalRole);
+      spawnSession(sessionId, cliType, 80, 24, agent, 'local', 'autonomous', swarmRole, getProjectPath() || undefined, functionalRole, undefined, undefined, undefined, spawnOfficeId);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to spawn terminal';
       console.error(`PTY spawn failed for ${cliType}:`, message);
@@ -267,6 +273,7 @@ swarmRoutes.post('/spawn', async (req, res) => {
     // Register in swarm
     addMember({
       sessionId,
+      officeId: spawnOfficeId,
       agentId: agent.id,
       agentName: agent.name,
       agentEmail: agent.email,
@@ -280,6 +287,7 @@ swarmRoutes.post('/spawn', async (req, res) => {
     // Emit event for ws-handler to set up output broadcasting + notify clients
     swarmEvents.emit('session:spawned', {
       sessionId,
+      officeId: spawnOfficeId,
       agentId: agent.id,
       agentName: agent.name,
       agentEmail: agent.email,

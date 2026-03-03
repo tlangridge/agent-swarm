@@ -16,6 +16,7 @@ export type ExecutionMode = 'local' | 'docker';
 
 export interface PtySession {
   id: string;
+  officeId: string | null;
   agentId: string | null;
   agentName: string | null;
   agentEmail: string | null;
@@ -147,9 +148,10 @@ export function spawnSession(
   pipeline?: PipelineStage[],
   personaCtx?: PersonaContext,
   worktreeBranch?: string,
+  officeId?: string | null,
 ): PtySession {
   if (executionMode === 'docker') {
-    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx);
+    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx, officeId);
   }
   const effectiveProjectPath = projectPath || process.env.HOME || '/tmp';
 
@@ -205,6 +207,7 @@ export function spawnSession(
 
   const session: PtySession = {
     id,
+    officeId: officeId ?? null,
     agentId: agent?.id ?? null,
     agentName: agent?.name ?? null,
     agentEmail: agent?.email ?? null,
@@ -285,6 +288,7 @@ function spawnDockerSession(
   functionalRole?: FunctionalRole | null,
   pipeline?: PipelineStage[],
   personaCtx?: PersonaContext,
+  officeId?: string | null,
 ): PtySession {
   const containerName = `agent-swarm-${id.slice(0, 8)}`;
   const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode);
@@ -365,6 +369,7 @@ function spawnDockerSession(
 
   const session: PtySession = {
     id,
+    officeId: officeId ?? null,
     agentId: agent?.id ?? null,
     agentName: agent?.name ?? null,
     agentEmail: agent?.email ?? null,

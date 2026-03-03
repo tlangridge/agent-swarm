@@ -17,6 +17,7 @@ export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export interface SwarmMember {
   sessionId: string;
+  officeId: string;
   agentId: string | null;
   agentName: string | null;
   agentEmail: string | null;
@@ -61,10 +62,10 @@ export function setRole(sessionId: string, role: SwarmRole): void {
   const member = members.get(sessionId);
   if (!member) return;
 
-  // If promoting to lead, demote the current lead first
+  // If promoting to lead, demote the current lead within the same office first
   if (role === 'lead') {
     for (const [id, m] of members) {
-      if (m.role === 'lead' && id !== sessionId) {
+      if (m.officeId === member.officeId && m.role === 'lead' && id !== sessionId) {
         m.role = 'worker';
         swarmEvents.emit('member:role-changed', m);
       }
@@ -96,6 +97,17 @@ export function getMemberByName(name: string): SwarmMember | undefined {
     if (m.agentName?.toLowerCase() === lower) return m;
   }
   return undefined;
+}
+
+export function getMembersByOffice(officeId: string): SwarmMember[] {
+  return Array.from(members.values()).filter(m => m.officeId === officeId);
+}
+
+export function getLeadSessionIdForOffice(officeId: string): string | null {
+  for (const m of members.values()) {
+    if (m.officeId === officeId && m.role === 'lead') return m.sessionId;
+  }
+  return null;
 }
 
 // ── Circuit breaker ──────────────────────────────────────────────────────────

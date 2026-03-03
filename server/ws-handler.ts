@@ -20,11 +20,16 @@ interface KillMsg { type: 'kill'; sessionId: string }
 interface SetRoleMsg { type: 'set-role'; sessionId: string; role: SwarmRole }
 interface SetProjectPathMsg { type: 'set-project-path'; projectPath: string }
 interface InjectMsg { type: 'inject'; sessionId: string; text: string }
+interface SubscribeMsg { type: 'subscribe'; officeIds: string[] }
 
-type ClientMessage = CreateMsg | InputMsg | ResizeMsg | KillMsg | SetRoleMsg | SetProjectPathMsg | InjectMsg;
+type ClientMessage = CreateMsg | InputMsg | ResizeMsg | KillMsg | SetRoleMsg | SetProjectPathMsg | InjectMsg | SubscribeMsg;
 
 // Track all connected browser clients for broadcasting swarm updates
-const connectedClients = new Set<WebSocket>();
+interface ClientState {
+  ws: WebSocket;
+  subscribedOffices: Set<string>;
+}
+const connectedClients = new Map<WebSocket, ClientState>();
 const sessionBridges = new Set<string>();
 
 function send(ws: WebSocket, data: unknown): void {
@@ -33,40 +38,71 @@ function send(ws: WebSocket, data: unknown): void {
   }
 }
 
-function broadcastSwarmUpdate(): void {
-  const payload = {
-    type: 'swarm:update',
-    members: getMembers(),
-    leadSessionId: getLeadSessionId(),
-  };
-  for (const client of connectedClients) {
-    send(client, payload);
+function broadcastToOffice(officeId: string, payload: unknown): void {
+  for (const [ws, state] of connectedClients) {
+    if (state.subscribedOffices.has(officeId) || state.subscribedOffices.size === 0) {
+      send(ws, payload);
+    }
+  }
+}
+
+function broadcastToAll(payload: unknown): void {
+  for (const [ws] of connectedClients) {
+    send(ws, payload);
+  }
+}
+
+function broadcastSwarmUpdate(officeId?: string): void {
+  if (officeId) {
+    const officeMembers = Array.from(getMembers()).filter(m => m.officeId === officeId);
+    const officeLead = officeMembers.find(m => m.role === 'lead')?.sessionId ?? null;
+    const payload = {
+      type: 'swarm:update',
+      officeId,
+      members: officeMembers,
+      leadSessionId: officeLead,
+    };
+    broadcastToOffice(officeId, payload);
+  } else {
+    // Fallback: broadcast all members to all clients (backward compat)
+    const payload = {
+      type: 'swarm:update',
+      members: getMembers(),
+      leadSessionId: getLeadSessionId(),
+    };
+    broadcastToAll(payload);
   }
 }
 
 // Emit swarm updates to all browser clients when membership changes
-swarmEvents.on('member:joined', () => {
-  broadcastSwarmUpdate();
+swarmEvents.on('member:joined', (member) => {
+  broadcastSwarmUpdate(member.officeId);
   schedulePersistState();
 });
-swarmEvents.on('member:left', () => {
-  broadcastSwarmUpdate();
+swarmEvents.on('member:left', (member) => {
+  broadcastSwarmUpdate(member.officeId);
   schedulePersistState();
 });
-swarmEvents.on('member:role-changed', () => {
-  broadcastSwarmUpdate();
+swarmEvents.on('member:role-changed', (member) => {
+  broadcastSwarmUpdate(member.officeId);
   schedulePersistState();
 });
 
-// Broadcast shift progress to all browser clients
+// Broadcast shift progress to browser clients, scoped by office
 swarmEvents.on('shift:progress', (data) => {
-  for (const client of connectedClients) {
-    send(client, { type: 'shift:progress', ...data });
+  const officeId = data.officeId;
+  if (officeId) {
+    broadcastToOffice(officeId, { type: 'shift:progress', ...data });
+  } else {
+    broadcastToAll({ type: 'shift:progress', ...data });
   }
 });
 swarmEvents.on('shift:status', (data) => {
-  for (const client of connectedClients) {
-    send(client, { type: 'shift:status', ...data });
+  const officeId = data.shift?.officeId;
+  if (officeId) {
+    broadcastToOffice(officeId, { type: 'shift:status', ...data });
+  } else {
+    broadcastToAll({ type: 'shift:status', ...data });
   }
 });
 
@@ -102,8 +138,12 @@ function bridgeSession(sessionId: string): void {
 
   session.pty.onData((data: string) => {
     accumScrollback(session, data);
-    for (const client of connectedClients) {
-      send(client, { type: 'output', sessionId, data });
+    if (session.officeId) {
+      broadcastToOffice(session.officeId, { type: 'output', sessionId, data });
+    } else {
+      for (const [ws] of connectedClients) {
+        send(ws, { type: 'output', sessionId, data });
+      }
     }
   });
 
@@ -115,9 +155,7 @@ function bridgeSession(sessionId: string): void {
 
     unregisterSession(sessionId);
     sessionBridges.delete(sessionId);
-    for (const client of connectedClients) {
-      send(client, { type: 'exited', sessionId, exitCode });
-    }
+    broadcastToAll({ type: 'exited', sessionId, exitCode });
     sessions.delete(sessionId);
     removeMember(sessionId);
     schedulePersistState();
@@ -131,15 +169,22 @@ export function activateSessionStreaming(): void {
 }
 
 // Handle server-spawned sessions (from POST /api/swarm/spawn)
-// Route PTY output to all connected browser clients and notify them to create a tile
-swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole, worktreeBranch }) => {
+// Route PTY output to connected browser clients and notify them to create a tile
+swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole, worktreeBranch, officeId }) => {
   if (!sessions.has(sessionId)) return;
   bridgeSession(sessionId);
 
-  // Notify all clients to create a terminal tile
-  for (const client of connectedClients) {
-    send(client, { type: 'session:spawned', sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole: functionalRole || null, worktreeBranch: worktreeBranch || null });
+  const payload = { type: 'session:spawned', sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole: functionalRole || null, worktreeBranch: worktreeBranch || null, officeId: officeId || null };
+  if (officeId) {
+    broadcastToOffice(officeId, payload);
+  } else {
+    broadcastToAll(payload);
   }
+});
+
+// Forward office notifications to all browser clients
+swarmEvents.on('office:notification', (notification) => {
+  broadcastToAll({ type: 'office:notification', notification });
 });
 
 export function handleWebSocket(ws: WebSocket): void {
@@ -158,6 +203,7 @@ export function handleWebSocket(ws: WebSocket): void {
       swarmRole: member?.role || 'worker',
       functionalRole: member?.functionalRole || null,
       worktreeBranch: session.worktreeBranch || null,
+      officeId: session.officeId || null,
       scrollback: session.scrollback || undefined,
     });
   }
@@ -170,7 +216,7 @@ export function handleWebSocket(ws: WebSocket): void {
   });
 
   // NOW add to connectedClients — real-time output starts flowing
-  connectedClients.add(ws);
+  connectedClients.set(ws, { ws, subscribedOffices: new Set() });
 
   ws.on('message', async (raw) => {
     let msg: ClientMessage;
@@ -221,6 +267,7 @@ export function handleWebSocket(ws: WebSocket): void {
         // Register in swarm
         addMember({
           sessionId,
+          officeId: '',  // ad-hoc session, not part of any office
           agentId: agent?.id ?? null,
           agentName: agent?.name ?? null,
           agentEmail: agent?.email ?? null,
@@ -282,6 +329,17 @@ export function handleWebSocket(ws: WebSocket): void {
 
       case 'inject': {
         injectMessage(msg.sessionId, msg.text);
+        break;
+      }
+
+      case 'subscribe': {
+        const state = connectedClients.get(ws);
+        if (state) {
+          state.subscribedOffices.clear();
+          for (const id of msg.officeIds) {
+            state.subscribedOffices.add(id);
+          }
+        }
         break;
       }
     }

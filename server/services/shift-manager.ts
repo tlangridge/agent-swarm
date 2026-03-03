@@ -4,7 +4,7 @@ import type { Office, OfficeSlot, PipelineStage } from './office-store.js';
 import { getOffice } from './office-store.js';
 import { fireWebhook } from './webhooks.js';
 import type { FunctionalRole, SwarmRole } from './swarm-registry.js';
-import { addMember, removeMember, getMemberByName, getMembers, swarmEvents } from './swarm-registry.js';
+import { addMember, removeMember, getMemberByName, getMembers, getMembersByOffice, swarmEvents } from './swarm-registry.js';
 import { listAgents, saveAgent } from './agent-store.js';
 import { provisionInbox } from './agentmail.js';
 import { spawnSession, sessions, killSession, PORT } from '../pty-manager.js';
@@ -40,10 +40,26 @@ export interface ShiftState {
   reviewSummary?: string;
 }
 
-let activeShift: ShiftState | null = null;
+const activeShifts = new Map<string, ShiftState>();
 
-export function getActiveShift(): ShiftState | null {
-  return activeShift;
+export function getActiveShift(officeId?: string): ShiftState | null {
+  if (officeId) return activeShifts.get(officeId) ?? null;
+  // Backward compat: return first non-ended shift
+  for (const shift of activeShifts.values()) {
+    if (shift.status !== 'ended') return shift;
+  }
+  return null;
+}
+
+export function getActiveShifts(): ShiftState[] {
+  return Array.from(activeShifts.values()).filter(s => s.status !== 'ended');
+}
+
+export function getShiftBySessionId(sessionId: string): ShiftState | null {
+  for (const shift of activeShifts.values()) {
+    if (shift.slots.some(s => s.sessionId === sessionId)) return shift;
+  }
+  return null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -60,8 +76,9 @@ function emitShiftStatus(shift: ShiftState): void {
 }
 
 export async function badgeIn(office: Office, broadcast: (data: unknown) => void): Promise<ShiftState> {
-  if (activeShift && activeShift.status !== 'ended') {
-    throw new Error('A shift is already active. Badge out first.');
+  const existing = activeShifts.get(office.id);
+  if (existing && existing.status !== 'ended') {
+    throw new Error(`Office "${office.name}" already has an active shift.`);
   }
 
   const shift: ShiftState = {
@@ -76,7 +93,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       status: 'pending' as ShiftSlotStatus,
     })),
   };
-  activeShift = shift;
+  activeShifts.set(office.id, shift);
   emitShiftStatus(shift);
 
   const projectPath = office.projectPath || getProjectPath() || undefined;
@@ -197,11 +214,12 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         sessionId, cliType, 80, 24, agent,
         executionMode, permissionMode, swarmRole,
         agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-        worktreeBranch,
+        worktreeBranch, office.id,
       );
 
       addMember({
         sessionId,
+        officeId: office.id,
         agentId: agent.id,
         agentName: agent.name,
         agentEmail: agent.email,
@@ -215,6 +233,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       // Emit session:spawned for ws-handler to bridge output + create tile
       swarmEvents.emit('session:spawned', {
         sessionId,
+        officeId: office.id,
         agentId: agent.id,
         agentName: agent.name,
         agentEmail: agent.email,
@@ -342,16 +361,17 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
   return shift;
 }
 
-export async function badgeOut(): Promise<ShiftState | null> {
-  if (!activeShift) return null;
+export async function badgeOut(officeId: string): Promise<ShiftState | null> {
+  const shift = activeShifts.get(officeId);
+  if (!shift) return null;
 
-  stopScheduler();
-  stopIdleMonitor();
-  activeShift.status = 'ending';
-  emitShiftStatus(activeShift);
+  stopScheduler(officeId);
+  stopIdleMonitor(officeId);
+  shift.status = 'ending';
+  emitShiftStatus(shift);
 
   // Kill all sessions known to the shift
-  for (const slot of activeShift.slots) {
+  for (const slot of shift.slots) {
     if (slot.sessionId && slot.status === 'active') {
       try {
         killSession(slot.sessionId);
@@ -363,14 +383,13 @@ export async function badgeOut(): Promise<ShiftState | null> {
     }
   }
 
-  // Clean up any orphaned members left in the registry (e.g. from UI restarts
-  // that created sessions the shift-manager doesn't track)
-  for (const member of getMembers()) {
+  // Clean up any orphaned members left in the registry for this office
+  for (const member of getMembersByOffice(officeId)) {
     removeMember(member.sessionId);
   }
 
   // Log preserved worktrees for human review
-  const worktreeSummary = activeShift.slots
+  const worktreeSummary = shift.slots
     .filter(s => s.worktreeBranch)
     .map(s => `  ${s.name}: ${s.worktreeBranch}`)
     .join('\n');
@@ -378,19 +397,19 @@ export async function badgeOut(): Promise<ShiftState | null> {
     console.log(`Shift worktrees preserved:\n${worktreeSummary}`);
   }
 
-  activeShift.status = 'ended';
-  emitShiftStatus(activeShift);
-  fireWebhook('shift:ended', { officeId: activeShift.officeId, officeName: activeShift.officeName });
+  shift.status = 'ended';
+  emitShiftStatus(shift);
+  fireWebhook('shift:ended', { officeId: shift.officeId, officeName: shift.officeName });
 
-  const ended = activeShift;
-  activeShift = null;
-  return ended;
+  activeShifts.delete(officeId);
+  return shift;
 }
 
 export async function handleSlotExit(sessionId: string, exitCode: number): Promise<void> {
-  if (!activeShift || activeShift.status !== 'active') return;
+  const shift = getShiftBySessionId(sessionId);
+  if (!shift || shift.status !== 'active') return;
 
-  const slotState = activeShift.slots.find(s => s.sessionId === sessionId);
+  const slotState = shift.slots.find(s => s.sessionId === sessionId);
   if (!slotState) return;
 
   const retries = slotState.retryCount || 0;
@@ -399,10 +418,10 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
   if (exitCode !== 0 && retries < 3) {
     slotState.retryCount = retries + 1;
     slotState.status = 'booting';
-    emitShiftProgress(activeShift.officeId, slotState.slotIndex, slotState.name, 'booting');
+    emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'booting');
 
     try {
-      const office = await getOffice(activeShift.officeId);
+      const office = await getOffice(shift.officeId);
       if (!office) throw new Error('Office not found');
 
       const slot = office.slots[slotState.slotIndex];
@@ -446,11 +465,12 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
         newSessionId, cliType, 80, 24, agent,
         slot.executionMode || 'local', slot.permissionMode || 'autonomous', swarmRole,
         respawnProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-        respawnWorktreeBranch,
+        respawnWorktreeBranch, shift.officeId,
       );
 
       addMember({
         sessionId: newSessionId,
+        officeId: shift.officeId,
         agentId: agent.id,
         agentName: agent.name,
         agentEmail: agent.email,
@@ -463,6 +483,7 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
 
       swarmEvents.emit('session:spawned', {
         sessionId: newSessionId,
+        officeId: shift.officeId,
         agentId: agent.id,
         agentName: agent.name,
         agentEmail: agent.email,
@@ -485,7 +506,7 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       slotState.sessionId = newSessionId;
       slotState.status = 'active';
       slotState.error = undefined;
-      emitShiftProgress(activeShift.officeId, slotState.slotIndex, slotState.name, 'active', newSessionId);
+      emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'active', newSessionId);
       fireWebhook('agent:respawned', { agentName: slotState.name, retryCount: slotState.retryCount, newSessionId });
 
       console.log(`Auto-respawned ${slot.name} (attempt ${slotState.retryCount}/3)`);
@@ -494,61 +515,63 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       const message = err instanceof Error ? err.message : 'Unknown error';
       slotState.status = 'failed';
       slotState.error = `Respawn failed: ${message}`;
-      emitShiftProgress(activeShift.officeId, slotState.slotIndex, slotState.name, 'failed', undefined, slotState.error);
+      emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'failed', undefined, slotState.error);
       fireWebhook('agent:failed', { agentName: slotState.name, error: slotState.error, retryCount: slotState.retryCount });
       console.error(`Auto-respawn failed for ${slotState.name}:`, message);
     }
   } else {
     slotState.status = 'ended';
-    emitShiftProgress(activeShift.officeId, slotState.slotIndex, slotState.name, 'ended');
+    emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'ended');
   }
 }
 
 export function markReadyForReview(sessionId: string, summary: string): { success: boolean; error?: string } {
-  if (!activeShift || activeShift.status !== 'active') {
+  const shift = getShiftBySessionId(sessionId);
+  if (!shift || shift.status !== 'active') {
     return { success: false, error: 'No active shift' };
   }
 
-  const callerSlot = activeShift.slots.find(s => s.sessionId === sessionId);
+  const callerSlot = shift.slots.find(s => s.sessionId === sessionId);
   if (!callerSlot) {
     return { success: false, error: 'Session not part of active shift' };
   }
 
-  const leadIndex = activeShift.slots.findIndex(s => s.functionalRole === 'tech-lead');
+  const leadIndex = shift.slots.findIndex(s => s.functionalRole === 'tech-lead');
   const effectiveLeadIndex = leadIndex >= 0 ? leadIndex : 0;
   if (callerSlot.slotIndex !== effectiveLeadIndex) {
     return { success: false, error: 'Only the lead agent can mark shift as ready for review' };
   }
 
-  activeShift.status = 'review';
-  activeShift.reviewSummary = summary;
-  emitShiftStatus(activeShift);
+  shift.status = 'review';
+  shift.reviewSummary = summary;
+  emitShiftStatus(shift);
   fireWebhook('shift:ready-for-review', {
-    officeId: activeShift.officeId,
-    officeName: activeShift.officeName,
+    officeId: shift.officeId,
+    officeName: shift.officeName,
     summary,
   });
   return { success: true };
 }
 
 // --- Idle auto-dismiss ---
-let idleMonitorTimer: ReturnType<typeof setInterval> | null = null;
+const idleMonitors = new Map<string, ReturnType<typeof setInterval>>();
 
 export function startIdleMonitor(office: Office): void {
   const minutes = office.idleDismissMinutes ?? 0;
   if (minutes <= 0) return;
 
-  stopIdleMonitor();
+  stopIdleMonitor(office.id);
   const thresholdMs = minutes * 60 * 1000;
 
-  idleMonitorTimer = setInterval(async () => {
-    if (!activeShift || activeShift.status !== 'active') return;
+  const timer = setInterval(async () => {
+    const shift = activeShifts.get(office.id);
+    if (!shift || shift.status !== 'active') return;
 
     const leadIndex = office.slots.findIndex(s => s.functionalRole === 'tech-lead');
     const effectiveLeadIndex = leadIndex >= 0 ? leadIndex : 0;
     const { listTasks } = await import('./task-board.js');
 
-    for (const slotState of activeShift.slots) {
+    for (const slotState of shift.slots) {
       if (slotState.status !== 'active' || !slotState.sessionId) continue;
       if (slotState.slotIndex === effectiveLeadIndex) continue; // never dismiss lead
 
@@ -561,7 +584,7 @@ export function startIdleMonitor(office: Office): void {
       // Check if agent has any open or in-progress tasks
       const agentTasks = await listTasks({
         assignedTo: slotState.name,
-        officeId: activeShift.officeId,
+        officeId: shift.officeId,
       });
       const hasActiveTasks = agentTasks.some(t => t.status === 'open' || t.status === 'in-progress');
       if (hasActiveTasks) continue;
@@ -574,11 +597,11 @@ export function startIdleMonitor(office: Office): void {
       removeMember(slotState.sessionId);
       slotState.status = 'ended';
       slotState.error = `Auto-dismissed after ${minutes}m idle`;
-      emitShiftProgress(activeShift.officeId, slotState.slotIndex, slotState.name, 'ended');
+      emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'ended');
       fireWebhook('agent:dismissed', { agentName: slotState.name, reason: 'idle', idleMinutes: minutes });
 
       // Notify lead
-      const leadSlot = activeShift.slots[effectiveLeadIndex];
+      const leadSlot = shift.slots[effectiveLeadIndex];
       if (leadSlot?.sessionId) {
         injectMessage(leadSlot.sessionId, `[SWARM SYSTEM]: ${slotState.name} auto-dismissed after ${minutes}m idle with no tasks.`);
       }
@@ -586,22 +609,31 @@ export function startIdleMonitor(office: Office): void {
       console.log(`Auto-dismissed ${slotState.name} after ${minutes}m idle`);
     }
   }, 60_000); // check every 60s
+  idleMonitors.set(office.id, timer);
 }
 
-export function stopIdleMonitor(): void {
-  if (idleMonitorTimer) {
-    clearInterval(idleMonitorTimer);
-    idleMonitorTimer = null;
+export function stopIdleMonitor(officeId?: string): void {
+  if (officeId) {
+    const timer = idleMonitors.get(officeId);
+    if (timer) {
+      clearInterval(timer);
+      idleMonitors.delete(officeId);
+    }
+  } else {
+    // Backward compat: clear all
+    for (const timer of idleMonitors.values()) clearInterval(timer);
+    idleMonitors.clear();
   }
 }
 
 /** Spawn a single pending (unbooted) slot on demand */
-export async function spawnSlotOnDemand(slotIndex: number): Promise<ShiftSlotState | null> {
-  if (!activeShift || activeShift.status !== 'active') return null;
-  const slotState = activeShift.slots[slotIndex];
+export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): Promise<ShiftSlotState | null> {
+  const shift = officeId ? activeShifts.get(officeId) : getActiveShift();
+  if (!shift || shift.status !== 'active') return null;
+  const slotState = shift.slots[slotIndex];
   if (!slotState || slotState.status !== 'pending') return null;
 
-  const office = await getOffice(activeShift.officeId);
+  const office = await getOffice(shift.officeId);
   if (!office) return null;
 
   const slot = office.slots[slotIndex];
@@ -686,11 +718,12 @@ export async function spawnSlotOnDemand(slotIndex: number): Promise<ShiftSlotSta
       sessionId, cliType, 80, 24, agent,
       executionMode, permissionMode, swarmRole,
       agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-      worktreeBranch,
+      worktreeBranch, shift.officeId,
     );
 
     addMember({
       sessionId,
+      officeId: shift.officeId,
       agentId: agent.id,
       agentName: agent.name,
       agentEmail: agent.email,
@@ -703,6 +736,7 @@ export async function spawnSlotOnDemand(slotIndex: number): Promise<ShiftSlotSta
 
     swarmEvents.emit('session:spawned', {
       sessionId,
+      officeId: shift.officeId,
       agentId: agent.id,
       agentName: agent.name,
       agentEmail: agent.email,

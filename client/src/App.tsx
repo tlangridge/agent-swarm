@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Mosaic, MosaicWindow, createBalancedTreeFromLeaves } from 'react-mosaic-component';
 import type { MosaicNode, MosaicBranch } from 'react-mosaic-component';
 import 'react-mosaic-component/react-mosaic-component.css';
@@ -13,6 +13,7 @@ import AgentDashboard from './components/AgentDashboard';
 import AgentManager from './components/AgentManager';
 import SessionPicker from './components/SessionPicker';
 import ShiftStatusBar from './components/ShiftStatusBar';
+import OfficeTabBar from './components/OfficeTabBar';
 import PipelinePanel from './components/PipelinePanel';
 import WorkflowPanel from './components/WorkflowPanel';
 import { useAgents } from './hooks/useAgents';
@@ -20,6 +21,8 @@ import { useWorktrees } from './hooks/useWorktrees';
 import { useWorktreeOverview } from './hooks/useWorktreeOverview';
 import { useOffices } from './hooks/useOffices';
 import { useTasks } from './hooks/useTasks';
+import { useHashRoute } from './hooks/useHashRoute';
+import { useNotifications } from './hooks/useNotifications';
 import type { TerminalSession, CliType, ExecutionMode, PermissionMode, SwarmRole, SwarmMember, AgentIdentity, Worktree, ServerMessage, FunctionalRole, ShiftState, SavedSessionSummary } from './types';
 import { FUNCTIONAL_ROLE_COLORS, FUNCTIONAL_ROLE_LABELS } from './types';
 
@@ -33,11 +36,12 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [connected, setConnected] = useState(false);
   const [swarmMembers, setSwarmMembers] = useState<SwarmMember[]>([]);
-  const [leadSessionId, setLeadSessionId] = useState<string | null>(null);
   const [projectPath, setProjectPath] = useState('');
   const [projectPathValid, setProjectPathValid] = useState<boolean | null>(null);
   const [pickingProjectPath, setPickingProjectPath] = useState(false);
-  const [layout, setLayout] = useState<MosaicNode<string> | null>(null);
+  const [layouts, setLayouts] = useState<Map<string, MosaicNode<string> | null>>(new Map());
+  const [focusedOfficeId, setFocusedOfficeId] = useState<string | null>(null);
+  const focusedOfficeIdRef = useRef<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(360);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -60,21 +64,112 @@ export default function App() {
   const { agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, createAgent, updateAgent, deleteAgent, refresh } = useAgents();
   const { worktrees, isGitRepo, createWorktree, refresh: refreshWorktrees } = useWorktrees();
   const { overview, loading: overviewLoading, error: overviewError, refreshNow: refreshOverview } = useWorktreeOverview(connected);
-  const { offices, activeShift, setActiveShift, fetchOffices, createOffice, updateOffice, deleteOffice, badgeIn, badgeOut } = useOffices();
-  const { tasks, moveTask } = useTasks(connected, selectedOfficeId || undefined);
+  const { offices, activeShifts, setActiveShifts, fetchOffices, createOffice, updateOffice, deleteOffice, badgeIn, badgeOut } = useOffices();
+  const { officeId: routeOfficeId, setOfficeId: setRouteOfficeId } = useHashRoute();
+  const { notifications, addNotification, markAllReadForOffice, unreadByOffice } = useNotifications();
+  const { tasks, moveTask } = useTasks(connected, focusedOfficeId || selectedOfficeId || undefined);
   const selectedOffice = offices.find(o => o.id === selectedOfficeId) || null;
 
-  const handleBadgeIn = useCallback(async (officeId: string) => {
-    setSelectedOfficeId(officeId);
-    await badgeIn(officeId);
-  }, [badgeIn]);
+  // Derive the current office's shift from the shifts map
+  const activeShift = focusedOfficeId ? activeShifts.get(focusedOfficeId) ?? null : null;
 
-  // Auto-sync selectedOfficeId from active shift (e.g. on session restore)
-  useEffect(() => {
-    if (activeShift && activeShift.status !== 'ended' && !selectedOfficeId) {
-      setSelectedOfficeId(activeShift.officeId);
+  // Filter sessions for the focused office
+  const sessionsForOffice = useMemo(() => {
+    if (!focusedOfficeId) return sessions;
+    const filtered = new Map<string, TerminalSession>();
+    for (const [id, session] of sessions) {
+      if (session.officeId === focusedOfficeId || !session.officeId) {
+        filtered.set(id, session);
+      }
     }
-  }, [activeShift, selectedOfficeId]);
+    return filtered;
+  }, [sessions, focusedOfficeId]);
+
+  // Get layout for focused office
+  const layout = focusedOfficeId ? layouts.get(focusedOfficeId) ?? null : null;
+
+  // Get lead for focused office
+  const leadSessionId = useMemo(() => {
+    const member = swarmMembers.find(m =>
+      m.officeId === focusedOfficeId && m.role === 'lead'
+    );
+    return member?.sessionId ?? null;
+  }, [swarmMembers, focusedOfficeId]);
+
+  // setLayout wrapper — store per-office
+  const setLayoutForOffice = useCallback((newLayout: MosaicNode<string> | null) => {
+    if (!focusedOfficeId) return;
+    setLayouts(prev => {
+      const next = new Map(prev);
+      next.set(focusedOfficeId, newLayout);
+      return next;
+    });
+  }, [focusedOfficeId]);
+
+  const handleBadgeIn = useCallback(async (officeId: string) => {
+    setFocusedOfficeId(officeId);
+    setSelectedOfficeId(officeId);
+    setRouteOfficeId(officeId);
+    await badgeIn(officeId);
+  }, [badgeIn, setRouteOfficeId]);
+
+  const handleBadgeOut = useCallback(async (officeId: string) => {
+    await badgeOut(officeId);
+    // Clean up only this office's sessions
+    setSessions(prev => {
+      const next = new Map(prev);
+      for (const [id, session] of prev) {
+        if (session.officeId === officeId) {
+          next.delete(id);
+          writersRef.current.delete(id);
+          outputPreviewsRef.current.delete(id);
+          lastActivityRef.current.delete(id);
+        }
+      }
+      return next;
+    });
+    // Clean up layout
+    setLayouts(prev => {
+      const next = new Map(prev);
+      next.delete(officeId);
+      return next;
+    });
+    // If we were focused on this office, unfocus
+    if (focusedOfficeId === officeId) {
+      // Focus next active office or clear
+      const remaining = [...activeShifts.keys()].filter(id => id !== officeId);
+      setFocusedOfficeId(remaining[0] || null);
+    }
+  }, [badgeOut, focusedOfficeId, activeShifts]);
+
+  // Keep ref in sync for use inside WS handler closure
+  useEffect(() => {
+    focusedOfficeIdRef.current = focusedOfficeId;
+  }, [focusedOfficeId]);
+
+  // Sync from URL hash on mount
+  useEffect(() => {
+    if (routeOfficeId && !focusedOfficeId) {
+      setFocusedOfficeId(routeOfficeId);
+    }
+  }, [routeOfficeId]);
+
+  // Auto-focus first active shift if nothing focused
+  useEffect(() => {
+    if (!focusedOfficeId && activeShifts.size > 0) {
+      const firstShift = activeShifts.values().next().value;
+      if (firstShift) {
+        setFocusedOfficeId(firstShift.officeId);
+      }
+    }
+  }, [activeShifts, focusedOfficeId]);
+
+  // Mark notifications read when focusing an office
+  useEffect(() => {
+    if (focusedOfficeId) {
+      markAllReadForOffice(focusedOfficeId);
+    }
+  }, [focusedOfficeId, markAllReadForOffice]);
 
   // Session picker state
   const [savedSessions, setSavedSessions] = useState<SavedSessionSummary[] | null>(null);
@@ -171,7 +266,8 @@ export default function App() {
       };
 
       ws.onmessage = (event) => {
-        const msg: ServerMessage = JSON.parse(event.data);
+        const parsed = JSON.parse(event.data);
+        const msg: ServerMessage = parsed;
 
         switch (msg.type) {
           case 'created': {
@@ -237,12 +333,21 @@ export default function App() {
           }
 
           case 'swarm:update': {
-            setSwarmMembers(msg.members);
-            setLeadSessionId(msg.leadSessionId);
+            // If officeId is present, only update members for that office
+            if (msg.officeId) {
+              const oid = msg.officeId;
+              setSwarmMembers(prev => {
+                const others = prev.filter(m => m.officeId !== oid);
+                const newMembers = (msg.members || []).map(m => ({ ...m, officeId: oid }));
+                return [...others, ...newMembers];
+              });
+            } else {
+              setSwarmMembers(msg.members || []);
+            }
             // Sync swarmRole and functionalRole in sessions
             setSessions(prev => {
               const next = new Map(prev);
-              for (const member of msg.members) {
+              for (const member of (msg.members || [])) {
                 const session = next.get(member.sessionId);
                 if (session && (session.swarmRole !== member.role || session.functionalRole !== member.functionalRole)) {
                   next.set(member.sessionId, { ...session, swarmRole: member.role, functionalRole: member.functionalRole });
@@ -265,6 +370,7 @@ export default function App() {
               swarmRole: msg.swarmRole,
               functionalRole: msg.functionalRole,
               worktreeBranch: msg.worktreeBranch || undefined,
+              officeId: msg.officeId || focusedOfficeIdRef.current || undefined,
             };
             setSessions(prev => {
               const next = new Map(prev);
@@ -285,6 +391,7 @@ export default function App() {
               swarmRole: msg.swarmRole,
               functionalRole: msg.functionalRole,
               worktreeBranch: msg.worktreeBranch || undefined,
+              officeId: msg.officeId || undefined,
             };
             setSessions(prev => {
               const next = new Map(prev);
@@ -309,20 +416,46 @@ export default function App() {
           }
 
           case 'shift:progress': {
-            setActiveShift(prev => {
-              if (!prev) return prev;
-              const slots = [...prev.slots];
-              const slot = slots[msg.slotIndex];
-              if (slot) {
-                slots[msg.slotIndex] = { ...slot, status: msg.status, sessionId: msg.sessionId, error: msg.error };
+            setActiveShifts(prev => {
+              const next = new Map(prev);
+              const shift = next.get(msg.officeId);
+              if (shift) {
+                const updated = { ...shift, slots: [...shift.slots] };
+                if (updated.slots[msg.slotIndex]) {
+                  updated.slots[msg.slotIndex] = {
+                    ...updated.slots[msg.slotIndex],
+                    status: msg.status,
+                    sessionId: msg.sessionId || updated.slots[msg.slotIndex].sessionId,
+                    error: msg.error,
+                  };
+                }
+                next.set(msg.officeId, updated);
               }
-              return { ...prev, slots };
+              return next;
             });
             break;
           }
 
           case 'shift:status': {
-            setActiveShift(msg.shift);
+            const shift = msg.shift;
+            if (shift) {
+              setActiveShifts(prev => {
+                const next = new Map(prev);
+                if (shift.status === 'ended') {
+                  next.delete(shift.officeId);
+                } else {
+                  next.set(shift.officeId, shift);
+                }
+                return next;
+              });
+            }
+            break;
+          }
+
+          case 'office:notification': {
+            if (msg.notification) {
+              addNotification(msg.notification);
+            }
             break;
           }
         }
@@ -346,6 +479,19 @@ export default function App() {
       ws.send(JSON.stringify(data));
     }
   }, []);
+
+  // Subscribe to focused office + all active offices (for notifications)
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const officeIds = [...activeShifts.keys()];
+    if (focusedOfficeId && !officeIds.includes(focusedOfficeId)) {
+      officeIds.push(focusedOfficeId);
+    }
+
+    ws.send(JSON.stringify({ type: 'subscribe', officeIds }));
+  }, [focusedOfficeId, activeShifts]);
 
   const handleSetProjectPath = useCallback(async (path: string) => {
     try {
@@ -515,9 +661,10 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
-    const sessionIds = Array.from(sessions.keys());
-    setLayout(prev => reconcilePinnedLeadLayout(prev, sessionIds, leadSessionId));
-  }, [sessions, leadSessionId]);
+    const sessionIds = Array.from(sessionsForOffice.keys());
+    const newLayout = reconcilePinnedLeadLayout(layout, sessionIds, leadSessionId);
+    setLayoutForOffice(newLayout);
+  }, [sessionsForOffice, leadSessionId]);
 
   // Sync output preview refs → state every 500ms (avoids re-render on every WS chunk)
   useEffect(() => {
@@ -623,9 +770,9 @@ export default function App() {
   }, []);
 
   const handleLayoutChange = useCallback((next: MosaicNode<string> | null) => {
-    const sessionIds = Array.from(sessions.keys());
-    setLayout(reconcilePinnedLeadLayout(next, sessionIds, leadSessionId));
-  }, [sessions, leadSessionId]);
+    const sessionIds = Array.from(sessionsForOffice.keys());
+    setLayoutForOffice(reconcilePinnedLeadLayout(next, sessionIds, leadSessionId));
+  }, [sessionsForOffice, leadSessionId, setLayoutForOffice]);
 
   const handleSidebarResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -666,19 +813,29 @@ export default function App() {
         onToggleWorkspaceMode={handleToggleWorkspaceMode}
       />
 
+      {activeShifts.size > 0 && (
+        <OfficeTabBar
+          activeShifts={activeShifts}
+          focusedOfficeId={focusedOfficeId}
+          unreadByOffice={unreadByOffice}
+          onFocusOffice={(id) => {
+            setFocusedOfficeId(id);
+            setSelectedOfficeId(id);
+            setRouteOfficeId(id);
+            markAllReadForOffice(id);
+          }}
+          onBack={() => {
+            setFocusedOfficeId(null);
+            setSelectedOfficeId(null);
+            setRouteOfficeId(null);
+          }}
+        />
+      )}
+
       {activeShift && activeShift.status !== 'ended' && (
         <ShiftStatusBar
           shift={activeShift}
-          onBadgeOut={async () => {
-            await badgeOut(activeShift.officeId);
-            for (const sessionId of sessions.keys()) {
-              writersRef.current.delete(sessionId);
-              outputPreviewsRef.current.delete(sessionId);
-              lastActivityRef.current.delete(sessionId);
-            }
-            setSessions(new Map());
-            setFocusedSessionId(null);
-          }}
+          onBadgeOut={handleBadgeOut}
         />
       )}
 
@@ -707,7 +864,7 @@ export default function App() {
                   loading={restoring}
                 />
               </div>
-            ) : sessions.size === 0 ? (
+            ) : sessionsForOffice.size === 0 ? (
               <div className="empty-state">
                 {selectedOfficeId && selectedOffice ? (
                   <div className="office-detail-view">
@@ -735,7 +892,7 @@ export default function App() {
                         </span>
                       ))}
                     </div>
-                    {(!activeShift || activeShift.status === 'ended') && (
+                    {(!activeShifts.has(selectedOfficeId)) && (
                       <button className="office-btn primary" onClick={() => handleBadgeIn(selectedOfficeId)} style={{ marginTop: 16 }}>
                         Start Shift
                       </button>
@@ -750,10 +907,10 @@ export default function App() {
                   <>
                     <OfficeDashboard
                       offices={offices}
-                      activeShift={activeShift}
+                      activeShifts={activeShifts}
                       agents={agents}
                       onBadgeIn={handleBadgeIn}
-                      onBadgeOut={badgeOut}
+                      onBadgeOut={handleBadgeOut}
                       onCreateOffice={createOffice}
                       onUpdateOffice={updateOffice}
                       onDeleteOffice={deleteOffice}
@@ -836,7 +993,7 @@ export default function App() {
                 <div className="focused-split-sidebar">
                   <div className="sidebar-header">Agents</div>
                   <div className="sidebar-agent-list">
-                    {Array.from(sessions.entries()).map(([sid, sess]) => {
+                    {Array.from(sessionsForOffice.entries()).map(([sid, sess]) => {
                       const isFocused = sid === focusedSessionId;
                       const isLead = sid === leadSessionId;
                       const fr = sess.functionalRole;
@@ -892,7 +1049,7 @@ export default function App() {
               </div>
             ) : workspaceMode === 'dashboard' ? (
               <AgentDashboard
-                sessions={sessions}
+                sessions={sessionsForOffice}
                 swarmMembers={swarmMembers}
                 leadSessionId={leadSessionId}
                 activeShift={activeShift}
@@ -972,11 +1129,12 @@ export default function App() {
       )}
 
       <BroadcastBar
-        sessionCount={sessions.size}
+        sessionCount={sessionsForOffice.size}
         leadSessionId={leadSessionId}
         leadAgentName={leadAgentName}
         onBroadcast={handleBroadcast}
         onSendToLead={handleSendToLead}
+        officeName={activeShift?.officeName}
       />
 
       {showPicker && (

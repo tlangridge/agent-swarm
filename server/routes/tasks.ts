@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { getMember, getMemberByName, getLeadSessionId, recordTaskSuccess, recordTaskFailure, canAcceptTask } from '../services/swarm-registry.js';
 import { listTasks, getTask, createTask, updateTask, deleteTask, areDependenciesMet, getReadyTasks, addVerificationRun } from '../services/task-board.js';
 import type { CompletionReport } from '../services/task-board.js';
-import { getActiveShift, spawnSlotOnDemand } from '../services/shift-manager.js';
+import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand } from '../services/shift-manager.js';
 import { injectMessage } from '../services/pty-writer.js';
 import { sessions } from '../pty-manager.js';
 import { isGitRepo, getWorktreeDiffStat, getWorktreeDiffPatch } from '../services/worktree.js';
@@ -23,7 +23,8 @@ taskRoutes.get('/', async (req, res) => {
     const member = sessionId ? getMember(sessionId) : undefined;
     assignedTo = member?.agentName || undefined;
   }
-  const officeId = str(req.query.officeId) || getActiveShift()?.officeId;
+  const senderSessionIdForOffice = req.headers['x-session-id'] as string | undefined;
+  const officeId = str(req.query.officeId) || (senderSessionIdForOffice ? getMember(senderSessionIdForOffice)?.officeId : undefined) || getActiveShift()?.officeId;
   const filters = {
     stage: str(req.query.stage),
     assignedTo,
@@ -65,7 +66,7 @@ taskRoutes.post('/', async (req, res) => {
     }
   }
 
-  const shift = getActiveShift();
+  const shift = getShiftBySessionId(senderSessionId) ?? getActiveShift(sender.officeId);
   const task = await createTask({
     title,
     description,
@@ -81,7 +82,7 @@ taskRoutes.post('/', async (req, res) => {
     prUrl,
     issueNumber,
     issueUrl,
-    officeId: shift?.officeId,
+    officeId: sender.officeId || shift?.officeId,
     createdBy: sender.agentName || 'Anonymous',
   });
 
@@ -91,7 +92,7 @@ taskRoutes.post('/', async (req, res) => {
       s => s.name.toLowerCase() === assignedTo.toLowerCase() && s.status === 'pending',
     );
     if (pendingSlot) {
-      spawnSlotOnDemand(pendingSlot.slotIndex).catch(err => {
+      spawnSlotOnDemand(pendingSlot.slotIndex, shift.officeId).catch(err => {
         console.warn(`Auto-spawn for ${assignedTo} failed:`, err);
       });
     }
@@ -115,13 +116,16 @@ taskRoutes.put('/:id', async (req, res) => {
 
   // Auto-spawn pending slot if newly assigned
   if (assignedTo) {
-    const shift = getActiveShift();
-    if (shift) {
-      const pendingSlot = shift.slots.find(
+    const updateSenderSessionId = senderSessionId;
+    const updateShift = updateSenderSessionId
+      ? (getShiftBySessionId(updateSenderSessionId) ?? getActiveShift(getMember(updateSenderSessionId)?.officeId))
+      : getActiveShift();
+    if (updateShift) {
+      const pendingSlot = updateShift.slots.find(
         s => s.name.toLowerCase() === assignedTo.toLowerCase() && s.status === 'pending',
       );
       if (pendingSlot) {
-        spawnSlotOnDemand(pendingSlot.slotIndex).catch(err => {
+        spawnSlotOnDemand(pendingSlot.slotIndex, updateShift.officeId).catch(err => {
           console.warn(`Auto-spawn for ${assignedTo} failed:`, err);
         });
       }

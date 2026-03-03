@@ -45,6 +45,7 @@ export interface SwarmMember {
   role: SwarmRole;
   functionalRole: FunctionalRole | null;
   joinedAt: string;
+  officeId?: string;
 }
 
 // --- Office types ---
@@ -223,6 +224,7 @@ export interface TerminalSession {
   swarmRole: SwarmRole;
   functionalRole: FunctionalRole | null;
   worktreeBranch?: string;
+  officeId?: string;
 }
 
 // WebSocket messages
@@ -283,13 +285,30 @@ export interface WsCreatedMsg { type: 'created'; sessionId: string; requestId?: 
 export interface WsOutputMsg { type: 'output'; sessionId: string; data: string }
 export interface WsExitedMsg { type: 'exited'; sessionId: string; exitCode: number }
 export interface WsErrorMsg { type: 'error'; message: string }
-export interface WsSwarmUpdateMsg { type: 'swarm:update'; members: SwarmMember[]; leadSessionId: string | null }
-export interface WsSessionSpawnedMsg { type: 'session:spawned'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null }
-export interface WsSessionRestoreMsg { type: 'session:restore'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; scrollback?: string }
+export interface WsSwarmUpdateMsg { type: 'swarm:update'; members: SwarmMember[]; leadSessionId: string | null; officeId?: string }
+export interface WsSessionSpawnedMsg { type: 'session:spawned'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; officeId?: string }
+export interface WsSessionRestoreMsg { type: 'session:restore'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; scrollback?: string; officeId?: string }
 export interface WsShiftProgressMsg { type: 'shift:progress'; officeId: string; slotIndex: number; slotName: string; status: ShiftSlotStatus; sessionId?: string; error?: string }
 export interface WsShiftStatusMsg { type: 'shift:status'; shift: ShiftState }
 
-export type ServerMessage = WsCreatedMsg | WsOutputMsg | WsExitedMsg | WsErrorMsg | WsSwarmUpdateMsg | WsSessionSpawnedMsg | WsSessionRestoreMsg | WsShiftProgressMsg | WsShiftStatusMsg;
+export type NotificationType = 'shift_ended' | 'agent_failed' | 'shift_review' | 'all_tasks_done';
+
+export interface OfficeNotification {
+  id: string;
+  officeId: string;
+  officeName: string;
+  type: NotificationType;
+  message: string;
+  timestamp: string;
+  read: boolean;
+}
+
+export interface WsOfficeNotificationMsg {
+  type: 'office:notification';
+  notification: OfficeNotification;
+}
+
+export type ServerMessage = WsCreatedMsg | WsOutputMsg | WsExitedMsg | WsErrorMsg | WsSwarmUpdateMsg | WsSessionSpawnedMsg | WsSessionRestoreMsg | WsShiftProgressMsg | WsShiftStatusMsg | WsOfficeNotificationMsg;
 
 // --- Saved session picker types ---
 

@@ -8,9 +8,10 @@ interface BroadcastBarProps {
   leadAgentName: string | null;
   onBroadcast: (text: string) => void;
   onSendToLead: (text: string) => void;
+  officeName?: string;
 }
 
-export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentName, onBroadcast, onSendToLead }: BroadcastBarProps) {
+export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentName, onBroadcast, onSendToLead, officeName }: BroadcastBarProps) {
   const [text, setText] = useState('');
   const [target, setTarget] = useState<BroadcastTarget>(leadSessionId ? 'lead' : 'all');
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -72,7 +73,7 @@ export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentNam
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={sessionCount === 0 ? 'No active sessions...' : target === 'lead' ? `Message ${leadAgentName || 'lead'}...` : 'Broadcast to all agents...'}
+          placeholder={sessionCount === 0 ? 'No active sessions...' : target === 'lead' ? `Message ${leadAgentName || 'lead'}...` : officeName ? `Message to ${officeName} team (${sessionCount} agents)...` : `Broadcast to all agents (${sessionCount})...`}
           disabled={sessionCount === 0}
           rows={1}
         />

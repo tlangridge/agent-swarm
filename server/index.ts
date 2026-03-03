@@ -17,6 +17,7 @@ import { killAll, validateCliTools } from './pty-manager.js';
 import { detectDocker, isDockerAvailable, isImageBuilt, buildImage } from './docker-builder.js';
 import { persistStateNow } from './services/session-persistence.js';
 import { migrateFromRosters } from './services/office-store.js';
+import { initNotificationManager, getNotifications } from './services/notification-manager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3010', 10);
@@ -56,6 +57,11 @@ app.use('/api/sessions', sessionRoutes);
 app.use('/api/project', projectRoutes);
 app.use('/api/worktrees', worktreeRoutes);
 
+app.get('/api/notifications', (req, res) => {
+  const officeId = req.query.officeId as string | undefined;
+  res.json({ notifications: getNotifications(officeId) });
+});
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'agent-swarm' });
 });
@@ -93,6 +99,8 @@ app.get('/{*path}', (_req, res, next) => {
     if (err) next();
   });
 });
+
+initNotificationManager();
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });

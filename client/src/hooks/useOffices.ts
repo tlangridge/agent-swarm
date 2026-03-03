@@ -3,7 +3,7 @@ import type { Office, OfficeSlot, PipelineStage, CronJob, ShiftState } from '../
 
 export function useOffices() {
   const [offices, setOffices] = useState<Office[]>([]);
-  const [activeShift, setActiveShift] = useState<ShiftState | null>(null);
+  const [activeShifts, setActiveShifts] = useState<Map<string, ShiftState>>(new Map());
   const [loading, setLoading] = useState(false);
 
   const fetchOffices = useCallback(async () => {
@@ -12,7 +12,15 @@ export function useOffices() {
       const res = await fetch('/api/offices');
       const data = await res.json();
       setOffices(data.offices || []);
-      setActiveShift(data.activeShift || null);
+      // Server now returns activeShifts (array) instead of activeShift (singular)
+      const shiftsArr: ShiftState[] = data.activeShifts || (data.activeShift ? [data.activeShift] : []);
+      const shiftsMap = new Map<string, ShiftState>();
+      for (const shift of shiftsArr) {
+        if (shift.status !== 'ended') {
+          shiftsMap.set(shift.officeId, shift);
+        }
+      }
+      setActiveShifts(shiftsMap);
     } catch {
       // ignore
     } finally {
@@ -53,9 +61,13 @@ export function useOffices() {
   const badgeOut = useCallback(async (id: string) => {
     const res = await fetch(`/api/offices/${id}/badge-out`, { method: 'POST' });
     const data = await res.json();
-    setActiveShift(null);
+    setActiveShifts(prev => {
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
     return data;
   }, []);
 
-  return { offices, activeShift, setActiveShift, loading, fetchOffices, createOffice, updateOffice, deleteOffice, badgeIn, badgeOut };
+  return { offices, activeShifts, setActiveShifts, loading, fetchOffices, createOffice, updateOffice, deleteOffice, badgeIn, badgeOut };
 }
