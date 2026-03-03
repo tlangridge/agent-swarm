@@ -74,8 +74,16 @@ export default function App() {
   const activeShift = focusedOfficeId ? activeShifts.get(focusedOfficeId) ?? null : null;
 
   // Filter sessions for the focused office
+  // When no office is focused (browsing all offices), show empty so OfficeDashboard renders
   const sessionsForOffice = useMemo(() => {
-    if (!focusedOfficeId) return sessions;
+    if (!focusedOfficeId) {
+      // Show only ad-hoc sessions (no officeId) when browsing offices
+      const adHoc = new Map<string, TerminalSession>();
+      for (const [id, session] of sessions) {
+        if (!session.officeId) adHoc.set(id, session);
+      }
+      return adHoc;
+    }
     const filtered = new Map<string, TerminalSession>();
     for (const [id, session] of sessions) {
       if (session.officeId === focusedOfficeId || !session.officeId) {

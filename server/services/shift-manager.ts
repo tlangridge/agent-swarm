@@ -14,7 +14,7 @@ import type { PersonaContext } from './swarm-prompts.js';
 import { injectMessage } from './pty-writer.js';
 import { startScheduler, stopScheduler } from './cron-scheduler.js';
 import { getProjectPath } from '../routes/project.js';
-import { isGitRepo, createWorktree } from './worktree.js';
+import { isGitRepo, createWorktree, removeWorktree } from './worktree.js';
 
 export type ShiftSlotStatus = 'pending' | 'booting' | 'active' | 'failed' | 'ended';
 export type ShiftStatus = 'starting' | 'active' | 'review' | 'ending' | 'ended';
@@ -29,6 +29,7 @@ export interface ShiftSlotState {
   worktreePath?: string;
   error?: string;
   retryCount?: number;
+  pendingTimeouts?: ReturnType<typeof setTimeout>[];
 }
 
 export interface ShiftState {
@@ -200,6 +201,12 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         const safeName = slot.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
         const branch = `swarm/${safeName}/${date}`;
         try {
+          try {
+            // Remove stale worktree from a previous shift on the same day
+            removeWorktree(projectPath, branch);
+          } catch {
+            // Doesn't exist or already removed — fine
+          }
           const wt = createWorktree(projectPath, branch);
           agentProjectPath = wt.path;
           worktreeBranch = branch;
@@ -245,12 +252,13 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       });
 
       // For non-Claude/non-bash agents, inject orientation after the CLI has initialized
+      if (!slotState.pendingTimeouts) slotState.pendingTimeouts = [];
       if (cliType !== 'claude' && cliType !== 'bash') {
         const swarmApiUrl = executionMode === 'docker'
           ? `http://host.docker.internal:${PORT}`
           : `http://localhost:${PORT}`;
         const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx);
-        setTimeout(() => injectMessage(sessionId, orientation), 2000);
+        slotState.pendingTimeouts.push(setTimeout(() => injectMessage(sessionId, orientation), 2000));
       }
 
       slotState.status = 'active';
@@ -335,7 +343,8 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
     );
 
     const kickoff = kickoffParts.join('\n');
-    setTimeout(() => injectMessage(leadSlot.sessionId!, kickoff), 3000);
+    if (!leadSlot.pendingTimeouts) leadSlot.pendingTimeouts = [];
+    leadSlot.pendingTimeouts.push(setTimeout(() => injectMessage(leadSlot.sessionId!, kickoff), 3000));
   }
 
   // Send "stand by" message to ALL worker agents so they don't start working prematurely
@@ -351,11 +360,15 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       '  3. If you have no tasks, WAIT for a message from the lead.',
       'Do NOT explore the codebase, write code, or take any action until you have a task.',
     ].join('\n');
-    setTimeout(() => {
+    const standbyTimer = setTimeout(() => {
       for (const slot of workerSlots) {
         injectMessage(slot.sessionId!, standbyMsg);
       }
     }, 4000);
+    for (const slot of workerSlots) {
+      if (!slot.pendingTimeouts) slot.pendingTimeouts = [];
+      slot.pendingTimeouts.push(standbyTimer);
+    }
   }
 
   return shift;
@@ -369,6 +382,14 @@ export async function badgeOut(officeId: string): Promise<ShiftState | null> {
   stopIdleMonitor(officeId);
   shift.status = 'ending';
   emitShiftStatus(shift);
+
+  // Cancel all pending timeouts for all slots before killing sessions
+  for (const slot of shift.slots) {
+    if (slot.pendingTimeouts) {
+      for (const t of slot.pendingTimeouts) clearTimeout(t);
+      slot.pendingTimeouts = [];
+    }
+  }
 
   // Kill all sessions known to the shift
   for (const slot of shift.slots) {
@@ -412,13 +433,31 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
   const slotState = shift.slots.find(s => s.sessionId === sessionId);
   if (!slotState) return;
 
+  // Cancel any pending timeouts for this slot (orientation, kickoff, standby messages)
+  if (slotState.pendingTimeouts) {
+    for (const t of slotState.pendingTimeouts) clearTimeout(t);
+    slotState.pendingTimeouts = [];
+  }
+
   const retries = slotState.retryCount || 0;
 
+  // Skip retry for unrecoverable exit codes
+  const isUnrecoverable = exitCode === 126 || exitCode === 127;
+
   // Only respawn on non-zero exit (crash) with retries remaining
-  if (exitCode !== 0 && retries < 3) {
+  if (exitCode !== 0 && retries < 3 && !isUnrecoverable) {
     slotState.retryCount = retries + 1;
     slotState.status = 'booting';
     emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'booting');
+
+    // Exponential backoff before respawn (1s, 2s, 4s, capped at 5s)
+    const backoffMs = Math.min(1000 * Math.pow(2, retries), 5000);
+    if (retries > 0) {
+      console.log(`${slotState.name} exited with code ${exitCode}, backing off ${backoffMs}ms before respawn attempt ${retries + 1}/3`);
+      await new Promise(resolve => setTimeout(resolve, backoffMs));
+    } else {
+      console.log(`${slotState.name} exited with code ${exitCode}, respawning (attempt ${retries + 1}/3)`);
+    }
 
     try {
       const office = await getOffice(shift.officeId);
@@ -495,12 +534,13 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       });
 
       // Inject orientation for non-Claude/non-bash agents (2s delay for CLI init)
+      if (!slotState.pendingTimeouts) slotState.pendingTimeouts = [];
       if (cliType !== 'claude' && cliType !== 'bash') {
         const swarmApiUrl = (slot.executionMode || 'local') === 'docker'
           ? `http://host.docker.internal:${PORT}`
           : `http://localhost:${PORT}`;
         const orientation = buildOrientationMessage(swarmRole, agent.name, newSessionId, swarmApiUrl, respawnProjectPath, respawnWorktreeBranch, slot.functionalRole, personaCtx);
-        setTimeout(() => injectMessage(newSessionId, orientation), 2000);
+        slotState.pendingTimeouts.push(setTimeout(() => injectMessage(newSessionId, orientation), 2000));
       }
 
       slotState.sessionId = newSessionId;
@@ -509,19 +549,34 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'active', newSessionId);
       fireWebhook('agent:respawned', { agentName: slotState.name, retryCount: slotState.retryCount, newSessionId });
 
-      console.log(`Auto-respawned ${slot.name} (attempt ${slotState.retryCount}/3)`);
+      console.log(`Auto-respawned ${slotState.name} (attempt ${slotState.retryCount}/3, exit code was ${exitCode})`);
 
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       slotState.status = 'failed';
-      slotState.error = `Respawn failed: ${message}`;
+      slotState.error = `Respawn failed (exit code ${exitCode}): ${message}`;
       emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'failed', undefined, slotState.error);
       fireWebhook('agent:failed', { agentName: slotState.name, error: slotState.error, retryCount: slotState.retryCount });
-      console.error(`Auto-respawn failed for ${slotState.name}:`, message);
+      console.error(`Auto-respawn failed for ${slotState.name} (exit code ${exitCode}):`, message);
     }
   } else {
-    slotState.status = 'ended';
-    emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'ended');
+    if (isUnrecoverable) {
+      slotState.status = 'failed';
+      slotState.error = `Unrecoverable exit code ${exitCode} (${exitCode === 126 ? 'permission denied' : 'command not found'})`;
+      emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'failed', undefined, slotState.error);
+      console.error(`${slotState.name} exited with unrecoverable code ${exitCode}, not retrying`);
+    } else if (exitCode !== 0 && retries >= 3) {
+      slotState.status = 'failed';
+      slotState.error = `Max retries exhausted (exit code ${exitCode})`;
+      emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'failed', undefined, slotState.error);
+      console.error(`${slotState.name} exited with code ${exitCode}, max retries (${retries}) exhausted`);
+    } else {
+      slotState.status = 'ended';
+      emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'ended');
+      if (exitCode !== 0) {
+        console.log(`${slotState.name} exited with code ${exitCode}`);
+      }
+    }
   }
 }
 
@@ -704,6 +759,12 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
       const safeName = slot.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
       const branch = `swarm/${safeName}/${date}`;
       try {
+        try {
+          // Remove stale worktree from a previous shift on the same day
+          removeWorktree(projectPath, branch);
+        } catch {
+          // Doesn't exist or already removed — fine
+        }
         const wt = createWorktree(projectPath, branch);
         agentProjectPath = wt.path;
         worktreeBranch = branch;
@@ -747,12 +808,13 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
       worktreeBranch,
     });
 
+    if (!slotState.pendingTimeouts) slotState.pendingTimeouts = [];
     if (cliType !== 'claude' && cliType !== 'bash') {
       const swarmApiUrl = executionMode === 'docker'
         ? `http://host.docker.internal:${PORT}`
         : `http://localhost:${PORT}`;
       const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx);
-      setTimeout(() => injectMessage(sessionId, orientation), 2000);
+      slotState.pendingTimeouts.push(setTimeout(() => injectMessage(sessionId, orientation), 2000));
     }
 
     slotState.status = 'active';
