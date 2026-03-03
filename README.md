@@ -20,10 +20,15 @@ A web-based command center for orchestrating teams of AI coding agents. Launch C
 - **Shift system** — Badge in to boot all agents at once, badge out to shut them down
 - **Functional roles** — Product Manager, Architect, Developer, Tester, DevOps, Code Reviewer, Designer, Tech Writer, Data Analyst, Security
 - **Lead/Worker hierarchy** — Designate a lead agent who coordinates the team
+- **Spawn modes** — Eager (boot all agents at once) or Demand (boot agents only when tasks are assigned)
+- **Idle auto-dismiss** — Automatically shut down agents after configurable idle periods
 
 ### Pipeline & Tasks
 - **Kanban-style pipeline** — Define stages (requirements → design → implementation → review → testing → deployment)
 - **Task board** — Agents create, pick, and complete tasks via the `swarm` CLI
+- **Task dependencies** — Tasks can depend on other tasks; agents are notified when blockers clear
+- **Task verification** — Run commands and record exit codes as verification runs on tasks
+- **Completion reports** — Auto-generated reports with git diff stats when tasks are marked done
 - **Priority levels** — Urgent, High, Medium, Low with visual indicators
 - **Expandable task cards** — Click to see full details, context, and history
 
@@ -36,9 +41,12 @@ A web-based command center for orchestrating teams of AI coding agents. Launch C
 
 ### Developer Experience
 - **Project folder selection** — Pick a working directory for all agents via the header UI
-- **Git worktree support** — Each agent works on a separate branch without file collisions
+- **Per-agent worktrees** — Each agent gets its own git worktree and branch, configurable per office (per-agent, shared, or disabled)
+- **Agent dashboard** — Structured status view showing current action, recent files, task stats, and circuit breaker state
+- **Activity parsing** — Infer what agents are doing from terminal scrollback (editing files, running tests, git operations)
 - **Session persistence** — Agent sessions survive server restarts
 - **Workflow sidebar** — Live view of scheduled tasks, workspace files, and pipeline status
+- **Circuit breaker** — Automatic failure tracking per agent with visual indicators
 
 ## Architecture
 
@@ -53,7 +61,8 @@ Server (Express + node-pty + WebSocket)
     │   ├── task-board       — File-based task storage
     │   ├── cron-scheduler   — Recurring prompt scheduler
     │   ├── workspace-files  — Shared file system
-    │   ├── shift-manager    — Shift lifecycle
+    │   ├── shift-manager    — Shift lifecycle + idle monitoring
+    │   ├── activity-parser  — Terminal scrollback analysis
     │   ├── pty-writer       — Safe terminal message injection
     │   └── worktree         — Git worktree management
     ├── routes/
@@ -124,6 +133,7 @@ swarm task create "title" "stage"     # Create a task
 swarm task pick <id>                  # Self-assign + start a task
 swarm task done <id>                  # Mark task complete
 swarm task update <id> key=value      # Update task fields
+swarm task verify <id> <command...>   # Run command, record exit code as verification
 
 # Shared files
 swarm write <path> "content"          # Write a shared file
@@ -136,7 +146,10 @@ swarm cron list                                # List scheduled tasks
 
 # Status
 swarm status                          # List all agents and roles
+swarm dashboard                       # Structured status with actions, files, stats
 swarm whoami                          # Show own identity and role
+swarm summon <agent-name>             # Boot a pending (unbooted) shift slot
+swarm worktrees                       # Show worktree overview with assignments
 ```
 
 ### Office Templates
@@ -210,8 +223,10 @@ server/
     task-board.ts                # File-based task storage
     cron-scheduler.ts            # Interval-based cron runner
     workspace-files.ts           # Shared workspace file I/O
-    shift-manager.ts             # Shift lifecycle management
+    shift-manager.ts             # Shift lifecycle + idle monitoring
+    activity-parser.ts           # Terminal scrollback analysis
     pty-writer.ts                # Safe PTY message injection
+    worktree.ts                  # Git worktree management
 
 cli/
   swarm                          # Bash CLI for agent coordination
