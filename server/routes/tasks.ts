@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import { getMember, getMemberByName, getLeadSessionId, recordTaskSuccess, recordTaskFailure, canAcceptTask } from '../services/swarm-registry.js';
-import { listTasks, getTask, createTask, updateTask, deleteTask, areDependenciesMet, getReadyTasks } from '../services/task-board.js';
-import { getActiveShift } from '../services/shift-manager.js';
+import { listTasks, getTask, createTask, updateTask, deleteTask, areDependenciesMet, getReadyTasks, addVerificationRun } from '../services/task-board.js';
+import type { CompletionReport } from '../services/task-board.js';
+import { getActiveShift, spawnSlotOnDemand } from '../services/shift-manager.js';
 import { injectMessage } from '../services/pty-writer.js';
+import { sessions } from '../pty-manager.js';
+import { isGitRepo, getWorktreeDiffStat, getWorktreeDiffPatch } from '../services/worktree.js';
 
 export const taskRoutes = Router();
 
@@ -62,6 +65,7 @@ taskRoutes.post('/', async (req, res) => {
     }
   }
 
+  const shift = getActiveShift();
   const task = await createTask({
     title,
     description,
@@ -77,9 +81,21 @@ taskRoutes.post('/', async (req, res) => {
     prUrl,
     issueNumber,
     issueUrl,
-    officeId: getActiveShift()?.officeId,
+    officeId: shift?.officeId,
     createdBy: sender.agentName || 'Anonymous',
   });
+
+  // Auto-spawn pending slot if task is assigned to one
+  if (assignedTo && shift) {
+    const pendingSlot = shift.slots.find(
+      s => s.name.toLowerCase() === assignedTo.toLowerCase() && s.status === 'pending',
+    );
+    if (pendingSlot) {
+      spawnSlotOnDemand(pendingSlot.slotIndex).catch(err => {
+        console.warn(`Auto-spawn for ${assignedTo} failed:`, err);
+      });
+    }
+  }
 
   res.status(201).json(task);
 });
@@ -96,6 +112,21 @@ taskRoutes.put('/:id', async (req, res) => {
   const { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl } = req.body;
   const task = await updateTask(req.params.id, { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl });
   if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  // Auto-spawn pending slot if newly assigned
+  if (assignedTo) {
+    const shift = getActiveShift();
+    if (shift) {
+      const pendingSlot = shift.slots.find(
+        s => s.name.toLowerCase() === assignedTo.toLowerCase() && s.status === 'pending',
+      );
+      if (pendingSlot) {
+        spawnSlotOnDemand(pendingSlot.slotIndex).catch(err => {
+          console.warn(`Auto-spawn for ${assignedTo} failed:`, err);
+        });
+      }
+    }
+  }
 
   res.json(task);
 });
@@ -142,19 +173,67 @@ taskRoutes.post('/:id/pick', async (req, res) => {
   res.json(task);
 });
 
-// POST /api/swarm/tasks/:id/done — Mark task done
+// POST /api/swarm/tasks/:id/done — Mark task done + auto-generate completion report
 taskRoutes.post('/:id/done', async (req, res) => {
   const senderSessionId = req.headers['x-session-id'] as string | undefined;
   if (!senderSessionId || !getMember(senderSessionId)) {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
-  const updates: { status: 'done'; output?: string } = { status: 'done' };
+  const sender = getMember(senderSessionId)!;
+  const updates: { status: 'done'; output?: string; completionReport?: CompletionReport } = { status: 'done' };
   if (req.body?.output) updates.output = req.body.output;
+
+  // Auto-generate completion report with diff
+  const session = sessions.get(senderSessionId);
+  const report: CompletionReport = {
+    agent: sender.agentName || 'Unknown',
+    generatedAt: new Date().toISOString(),
+  };
+
+  if (session) {
+    const projectPath = session.projectPath;
+    if (projectPath && isGitRepo(projectPath)) {
+      try {
+        report.branch = session.worktreeBranch || undefined;
+        report.diffStat = getWorktreeDiffStat(projectPath);
+        report.diffPatch = getWorktreeDiffPatch(projectPath);
+      } catch (err) {
+        console.warn('Failed to generate diff report:', err);
+      }
+    }
+  }
+
+  // Carry over existing verification runs
+  const existingTask = await getTask(req.params.id);
+  if (existingTask?.completionReport?.verificationRuns) {
+    report.verificationRuns = existingTask.completionReport.verificationRuns;
+  }
+
+  updates.completionReport = report;
   const task = await updateTask(req.params.id, updates);
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   recordTaskSuccess(senderSessionId);
+
+  // Notify lead with structured completion summary
+  const leadSessionId = getLeadSessionId();
+  if (leadSessionId && leadSessionId !== senderSessionId) {
+    const lines: string[] = [`[TASK COMPLETED]: "${task.title}" by ${sender.agentName}`];
+    if (report.branch) lines.push(`  Branch: ${report.branch}`);
+    if (report.diffStat) {
+      lines.push(`  Changes: ${report.diffStat.filesChanged} file${report.diffStat.filesChanged !== 1 ? 's' : ''} (+${report.diffStat.insertions} -${report.diffStat.deletions})`);
+      if (report.diffStat.files.length > 0) {
+        lines.push(`  Files: ${report.diffStat.files.slice(0, 10).join(', ')}${report.diffStat.files.length > 10 ? ` (+${report.diffStat.files.length - 10} more)` : ''}`);
+      }
+    }
+    if (report.verificationRuns && report.verificationRuns.length > 0) {
+      const lastRun = report.verificationRuns[report.verificationRuns.length - 1];
+      lines.push(`  Verification: \`${lastRun.command}\` -> exit ${lastRun.exitCode}`);
+    }
+    if (task.output) lines.push(`  Summary: ${task.output.slice(0, 200)}`);
+    injectMessage(leadSessionId, lines.join('\n'));
+  }
 
   // Check for newly unblocked tasks and notify agents
   const allTasks = await listTasks({ officeId: task.officeId });
@@ -166,7 +245,6 @@ taskRoutes.post('/:id/done', async (req, res) => {
   }
 
   if (nowReady.length > 0) {
-    // Notify assigned agents about their unblocked tasks
     for (const ready of nowReady) {
       if (ready.assignedTo) {
         const target = getMemberByName(ready.assignedTo);
@@ -175,8 +253,6 @@ taskRoutes.post('/:id/done', async (req, res) => {
         }
       }
     }
-    // Notify lead about newly available tasks
-    const leadSessionId = getLeadSessionId();
     if (leadSessionId) {
       const titles = nowReady.map(t => `"${t.title}" (${t.id})`).join(', ');
       injectMessage(leadSessionId, `[SWARM SYSTEM]: ${nowReady.length} task(s) unblocked: ${titles}`);
@@ -207,6 +283,29 @@ taskRoutes.post('/:id/fail', async (req, res) => {
   }
 
   res.json({ ...task, reason });
+});
+
+// POST /api/swarm/tasks/:id/verify — Record a verification run on a task
+taskRoutes.post('/:id/verify', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const { command, exitCode, outputSnippet, ranAt } = req.body;
+  if (!command || exitCode === undefined) {
+    return res.status(400).json({ error: "Missing 'command' or 'exitCode' field" });
+  }
+
+  const task = await addVerificationRun(req.params.id, {
+    command,
+    exitCode: Number(exitCode),
+    outputSnippet: outputSnippet || '',
+    ranAt: ranAt || new Date().toISOString(),
+  });
+
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  res.json(task);
 });
 
 // DELETE /api/swarm/tasks/:id — Delete a task

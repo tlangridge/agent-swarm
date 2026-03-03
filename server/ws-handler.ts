@@ -132,13 +132,13 @@ export function activateSessionStreaming(): void {
 
 // Handle server-spawned sessions (from POST /api/swarm/spawn)
 // Route PTY output to all connected browser clients and notify them to create a tile
-swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole }) => {
+swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole, worktreeBranch }) => {
   if (!sessions.has(sessionId)) return;
   bridgeSession(sessionId);
 
   // Notify all clients to create a terminal tile
   for (const client of connectedClients) {
-    send(client, { type: 'session:spawned', sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole: functionalRole || null });
+    send(client, { type: 'session:spawned', sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole: functionalRole || null, worktreeBranch: worktreeBranch || null });
   }
 });
 
@@ -157,6 +157,7 @@ export function handleWebSocket(ws: WebSocket): void {
       executionMode: session.executionMode,
       swarmRole: member?.role || 'worker',
       functionalRole: member?.functionalRole || null,
+      worktreeBranch: session.worktreeBranch || null,
       scrollback: session.scrollback || undefined,
     });
   }

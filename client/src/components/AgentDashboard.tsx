@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
 import AgentCard from './AgentCard';
-import type { TerminalSession, SwarmMember, ShiftState, ShiftSlotState, TaskItem, SwarmRole } from '../types';
+import type { TerminalSession, SwarmMember, ShiftState, ShiftSlotState, TaskItem, SwarmRole, AgentStructuredStatus } from '../types';
 
 interface AgentDashboardProps {
   sessions: Map<string, TerminalSession>;
@@ -22,6 +22,29 @@ export default function AgentDashboard({
   onFocusSession, onSetRole, onRestartSession, onCloseSession,
 }: AgentDashboardProps) {
   const sessionList = Array.from(sessions.entries());
+  const [structuredStatus, setStructuredStatus] = useState<Map<string, AgentStructuredStatus>>(new Map());
+
+  const fetchDashboard = useCallback(async () => {
+    try {
+      const res = await fetch('/api/swarm/dashboard');
+      if (!res.ok) return;
+      const data = await res.json();
+      const map = new Map<string, AgentStructuredStatus>();
+      for (const agent of data.agents) {
+        map.set(agent.sessionId, agent);
+      }
+      setStructuredStatus(map);
+    } catch {
+      // silently ignore fetch errors
+    }
+  }, []);
+
+  useEffect(() => {
+    if (sessionList.length === 0) return;
+    fetchDashboard();
+    const timer = setInterval(fetchDashboard, 5000);
+    return () => clearInterval(timer);
+  }, [fetchDashboard, sessionList.length]);
 
   const tasksByAgent = useMemo(() => {
     const map = new Map<string, TaskItem[]>();
@@ -61,6 +84,7 @@ export default function AgentDashboard({
             : [];
           const previewLines = outputPreviews.get(sessionId) || [];
           const lastActive = lastActivityAt.get(sessionId) || 0;
+          const agentStatus = structuredStatus.get(sessionId);
 
           return (
             <AgentCard
@@ -73,6 +97,7 @@ export default function AgentDashboard({
               previewLines={previewLines}
               lastActiveAt={lastActive}
               isLead={sessionId === leadSessionId}
+              structuredStatus={agentStatus}
               onFocus={() => onFocusSession(sessionId)}
               onSetRole={onSetRole}
               onRestart={() => onRestartSession(sessionId)}

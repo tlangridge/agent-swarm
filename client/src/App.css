@@ -1442,6 +1442,8 @@ body {
 .pipeline-move-forward { margin-left: auto; }
 .pipeline-done-btn { color: #9ece6a; border-color: #9ece6a44; }
 .pipeline-done-btn:hover { border-color: #9ece6a; color: #9ece6a; }
+.pipeline-reopen-btn { color: #7aa2f7; border-color: #7aa2f744; }
+.pipeline-reopen-btn:hover { border-color: #7aa2f7; color: #7aa2f7; }
 
 /* Office card cron/pipeline info */
 .office-card-crons {
@@ -2480,6 +2482,16 @@ body {
   color: #565f89;
   white-space: nowrap;
 }
+.agent-card-branch {
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: #565f89;
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agent-card-task {
   display: flex;
   align-items: center;
@@ -2503,6 +2515,57 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.agent-card-circuit-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #f7768e22;
+  color: #f7768e;
+  border: 1px solid #f7768e44;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.agent-card-task-elapsed {
+  margin-left: auto;
+  font-size: 10px;
+  color: #565f89;
+  white-space: nowrap;
+}
+.agent-card-stats {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+.agent-card-stat-done {
+  color: #9ece6a;
+}
+.agent-card-stat-failed {
+  color: #f7768e;
+}
+.agent-card-last-action {
+  font-size: 11px;
+  color: #7aa2f7;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-card-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-bottom: 4px;
+}
+.agent-card-file-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #292e42;
+  color: #a9b1d6;
+  white-space: nowrap;
+  font-family: Menlo, Monaco, 'Courier New', monospace;
 }
 .agent-card-preview {
   background: #16161e;

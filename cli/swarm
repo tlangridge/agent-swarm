@@ -106,8 +106,34 @@ cmd_task() {
     done)   cmd_task_done "$@" ;;
     fail)   cmd_task_fail "$@" ;;
     deps)   cmd_task_deps "$@" ;;
-    *) echo "Usage: swarm task <create|update|pick|done|fail|deps> [args]" >&2; exit 1 ;;
+    verify) cmd_task_verify "$@" ;;
+    *) echo "Usage: swarm task <create|update|pick|done|fail|deps|verify> [args]" >&2; exit 1 ;;
   esac
+}
+
+cmd_task_verify() {
+  local id=""
+  local cmd_args=()
+  # First arg is task ID, rest is command to run
+  while [ $# -gt 0 ]; do
+    if [ -z "$id" ]; then id="$1"; shift
+    else cmd_args+=("$1"); shift
+    fi
+  done
+  [ -z "$id" ] || [ ${#cmd_args[@]} -eq 0 ] && { echo "Usage: swarm task verify <id> <command...>" >&2; exit 1; }
+  local full_cmd="${cmd_args[*]}"
+
+  # Run command, capture exit code and last 20 lines
+  local output_text exit_code
+  set +e
+  output_text=$(eval "$full_cmd" 2>&1 | tail -20)
+  exit_code=$?
+  set -e
+
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  api_post "/api/swarm/tasks/$id/verify" \
+    "{\"command\":$(json_string "$full_cmd"),\"exitCode\":$exit_code,\"outputSnippet\":$(json_string "$output_text"),\"ranAt\":$(json_string "$now")}"
 }
 
 cmd_task_fail() {
@@ -313,6 +339,16 @@ cmd_log() {
 
 cmd_context() { api_get_auth "/api/swarm/files/context.md"; }
 
+cmd_dashboard() { api_get "/api/swarm/dashboard"; }
+
+cmd_summon() {
+  local name="${1:-}"
+  [ -z "$name" ] && { echo "Usage: swarm summon <agent-name>" >&2; exit 1; }
+  api_post "/api/swarm/summon" "{\"name\":$(json_string "$name")}"
+}
+
+cmd_worktrees() { api_get "/api/worktrees/overview"; }
+
 # ── help ─────────────────────────────────────────────────────────────────────
 
 cmd_help() {
@@ -323,10 +359,12 @@ swarm -- CLI for the Agent Swarm REST API
 
 COMMANDS
   status                           Show team members, roles, shift info
+  dashboard                        Structured agent status (tasks, actions, files)
   msg <agent> <message>            Send message to an agent
   broadcast <message>              Broadcast to all agents
   activity [agent] [--lines N]     View agent terminal activity
   spawn <name> [--task "..."]      Spawn a new agent
+  summon <name>                    Spawn a pending (unbooted) shift slot
 
   tasks [--mine] [--status X] [--ready]  List tasks (--ready: only dep-satisfied)
   task create <title> [opts]       Create a task (--depends id1,id2)
@@ -335,12 +373,14 @@ COMMANDS
   task done <id> [--output "..."]  Mark task done with optional output
   task fail <id> [reason]          Mark task as blocked/failed
   task deps <id>                   Show task dependencies
+  task verify <id> <command...>    Run command, record exit code as verification
 
   cron list                        List cron jobs
   cron create [opts]               Create a cron job
   cron delete <id>                 Delete a cron job
   cron toggle <id>                 Enable/disable a cron job
 
+  worktrees                        Show worktree overview with agent assignments
   files [path]                     List or browse shared files
   read <path>                      Read a shared file
   write <path> --content "..."     Write a shared file (or pipe stdin)
@@ -390,10 +430,13 @@ case "$cmd" in
   msg)       cmd_msg "$@" ;;
   broadcast) cmd_broadcast "$@" ;;
   activity)  cmd_activity "$@" ;;
+  dashboard) cmd_dashboard "$@" ;;
   spawn)     cmd_spawn "$@" ;;
+  summon)    cmd_summon "$@" ;;
   tasks)     cmd_tasks "$@" ;;
   task)      cmd_task "$@" ;;
   cron)      cmd_cron "$@" ;;
+  worktrees) cmd_worktrees "$@" ;;
   files)     cmd_files "$@" ;;
   read)      cmd_read "$@" ;;
   write)     cmd_write "$@" ;;

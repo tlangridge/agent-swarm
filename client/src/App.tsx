@@ -264,6 +264,7 @@ export default function App() {
               executionMode: msg.executionMode,
               swarmRole: msg.swarmRole,
               functionalRole: msg.functionalRole,
+              worktreeBranch: msg.worktreeBranch || undefined,
             };
             setSessions(prev => {
               const next = new Map(prev);
@@ -283,6 +284,7 @@ export default function App() {
               executionMode: msg.executionMode,
               swarmRole: msg.swarmRole,
               functionalRole: msg.functionalRole,
+              worktreeBranch: msg.worktreeBranch || undefined,
             };
             setSessions(prev => {
               const next = new Map(prev);

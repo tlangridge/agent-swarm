@@ -20,6 +20,8 @@ export interface OfficeSlot {
   cliType: CliType;
   permissionMode?: PermissionMode;
   executionMode?: ExecutionMode;
+  useWorktree?: boolean;    // default true; false keeps agent on main checkout
+  autoSpawn?: boolean;      // in 'demand' mode, spawn at badge-in? default true for lead only
   soul?: string;
   memory?: string;
   instructions?: string;
@@ -44,6 +46,9 @@ export interface Office {
   pipeline?: PipelineStage[];
   cronJobs?: CronJob[];
   projectPath?: string;
+  worktreeMode?: 'per-agent' | 'shared' | 'disabled';  // default 'per-agent'
+  spawnMode?: 'eager' | 'demand';                       // default 'eager'
+  idleDismissMinutes?: number;                           // 0 = disabled (default)
   soul?: string;
   memory?: string;
   instructions?: string;

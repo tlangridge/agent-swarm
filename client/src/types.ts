@@ -61,6 +61,8 @@ export interface OfficeSlot {
   cliType: CliType;
   permissionMode?: PermissionMode;
   executionMode?: ExecutionMode;
+  useWorktree?: boolean;
+  autoSpawn?: boolean;
   soul?: string;
   memory?: string;
   instructions?: string;
@@ -85,6 +87,9 @@ export interface Office {
   pipeline?: PipelineStage[];
   cronJobs?: CronJob[];
   projectPath?: string;
+  worktreeMode?: 'per-agent' | 'shared' | 'disabled';
+  spawnMode?: 'eager' | 'demand';
+  idleDismissMinutes?: number;
   soul?: string;
   memory?: string;
   instructions?: string;
@@ -101,6 +106,8 @@ export interface ShiftSlotState {
   functionalRole: FunctionalRole;
   status: ShiftSlotStatus;
   sessionId?: string;
+  worktreeBranch?: string;
+  worktreePath?: string;
   error?: string;
   retryCount?: number;
 }
@@ -277,8 +284,8 @@ export interface WsOutputMsg { type: 'output'; sessionId: string; data: string }
 export interface WsExitedMsg { type: 'exited'; sessionId: string; exitCode: number }
 export interface WsErrorMsg { type: 'error'; message: string }
 export interface WsSwarmUpdateMsg { type: 'swarm:update'; members: SwarmMember[]; leadSessionId: string | null }
-export interface WsSessionSpawnedMsg { type: 'session:spawned'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null }
-export interface WsSessionRestoreMsg { type: 'session:restore'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; scrollback?: string }
+export interface WsSessionSpawnedMsg { type: 'session:spawned'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null }
+export interface WsSessionRestoreMsg { type: 'session:restore'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; scrollback?: string }
 export interface WsShiftProgressMsg { type: 'shift:progress'; officeId: string; slotIndex: number; slotName: string; status: ShiftSlotStatus; sessionId?: string; error?: string }
 export interface WsShiftStatusMsg { type: 'shift:status'; shift: ShiftState }
 
@@ -306,4 +313,24 @@ export interface SavedSessionsResponse {
   savedAt?: string;
   projectPath?: string;
   sessions: SavedSessionSummary[];
+}
+
+// --- Structured agent status (from /api/swarm/dashboard) ---
+
+export type CircuitState = 'closed' | 'open';
+
+export interface AgentStructuredStatus {
+  agentName: string;
+  functionalRole: FunctionalRole | null;
+  swarmRole: SwarmRole;
+  sessionId: string;
+  currentTask?: { id: string; title: string };
+  completedTasks: number;
+  failedTasks: number;
+  lastAction?: string;
+  recentFiles: string[];
+  idleSeconds: number;
+  taskElapsedSeconds?: number;
+  circuitState: CircuitState;
+  worktreeBranch?: string;
 }

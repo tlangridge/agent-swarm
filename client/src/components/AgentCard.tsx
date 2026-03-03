@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { TerminalSession, SwarmMember, ShiftSlotStatus, TaskItem, SwarmRole } from '../types';
+import type { TerminalSession, SwarmMember, ShiftSlotStatus, TaskItem, SwarmRole, AgentStructuredStatus } from '../types';
 import { FUNCTIONAL_ROLE_COLORS, FUNCTIONAL_ROLE_LABELS } from '../types';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -27,6 +27,7 @@ interface AgentCardProps {
   previewLines: string[];
   lastActiveAt: number;
   isLead: boolean;
+  structuredStatus?: AgentStructuredStatus;
   onFocus: () => void;
   onSetRole: (sessionId: string, role: SwarmRole) => void;
   onRestart: () => void;
@@ -35,7 +36,7 @@ interface AgentCardProps {
 
 export default function AgentCard({
   sessionId, session, slotStatus, tasks,
-  previewLines, lastActiveAt, isLead,
+  previewLines, lastActiveAt, isLead, structuredStatus,
   onFocus, onSetRole, onRestart, onClose,
 }: AgentCardProps) {
   const [idleStr, setIdleStr] = useState('');
@@ -58,10 +59,16 @@ export default function AgentCard({
   const currentTask = tasks.find(t => t.status === 'in-progress') || tasks.find(t => t.status === 'open');
   const fr = session.functionalRole;
 
+  const completedCount = structuredStatus?.completedTasks ?? 0;
+  const failedCount = structuredStatus?.failedTasks ?? 0;
+  const lastAction = structuredStatus?.lastAction;
+  const recentFiles = structuredStatus?.recentFiles ?? [];
+  const circuitOpen = structuredStatus?.circuitState === 'open';
+
   return (
     <div className="agent-card" onClick={onFocus}>
       <div className="agent-card-header">
-        <span className="agent-card-status-dot" style={{ backgroundColor: STATUS_COLORS[status] || '#565f89' }} />
+        <span className="agent-card-status-dot" style={{ backgroundColor: circuitOpen ? '#f7768e' : (STATUS_COLORS[status] || '#565f89') }} />
         <span className="agent-card-name">{session.agentName || session.cliType}</span>
         {isLead && (
           <svg className="agent-card-lead-icon" width="12" height="12" viewBox="0 0 16 16" fill="#e0af68">
@@ -80,16 +87,52 @@ export default function AgentCard({
             {FUNCTIONAL_ROLE_LABELS[fr]}
           </span>
         )}
+        {circuitOpen && (
+          <span className="agent-card-circuit-badge">CIRCUIT OPEN</span>
+        )}
         <span className="agent-card-idle">{idleStr}</span>
       </div>
+
+      {session.worktreeBranch && (
+        <div className="agent-card-branch">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="#565f89" style={{ marginRight: 4, flexShrink: 0 }}>
+            <path d="M11.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zm-2.25.75a2.25 2.25 0 1 1 3 2.122V6a2.5 2.5 0 0 1-2.5 2.5H7.5a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.492 2.492 0 0 1 7.5 7h2.5a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25zM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5zM4.25 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5z"/>
+          </svg>
+          <span>{session.worktreeBranch}</span>
+        </div>
+      )}
 
       {currentTask ? (
         <div className="agent-card-task">
           <span className="agent-card-task-dot" style={{ backgroundColor: TASK_STATUS_COLORS[currentTask.status] || '#565f89' }} />
           <span className="agent-card-task-title">{currentTask.title}</span>
+          {structuredStatus?.taskElapsedSeconds != null && structuredStatus.taskElapsedSeconds > 0 && (
+            <span className="agent-card-task-elapsed">
+              {formatElapsed(structuredStatus.taskElapsedSeconds)}
+            </span>
+          )}
         </div>
       ) : (
         <div className="agent-card-task agent-card-task-empty">No active task</div>
+      )}
+
+      {(completedCount > 0 || failedCount > 0) && (
+        <div className="agent-card-stats">
+          {completedCount > 0 && <span className="agent-card-stat-done">{completedCount} done</span>}
+          {failedCount > 0 && <span className="agent-card-stat-failed">{failedCount} blocked</span>}
+        </div>
+      )}
+
+      {lastAction ? (
+        <div className="agent-card-last-action">{lastAction}</div>
+      ) : null}
+
+      {recentFiles.length > 0 && (
+        <div className="agent-card-files">
+          {recentFiles.map((f, i) => (
+            <span key={i} className="agent-card-file-badge">{f.split('/').pop()}</span>
+          ))}
+        </div>
       )}
 
       <div className="agent-card-preview">
@@ -119,4 +162,10 @@ export default function AgentCard({
       </div>
     </div>
   );
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`;
 }

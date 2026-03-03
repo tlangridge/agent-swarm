@@ -53,7 +53,13 @@ export default function ShiftStatusBar({ shift, onBadgeOut }: Props) {
           })}
         </div>
       </div>
-      <button className="office-btn danger shift-end-btn" onClick={onBadgeOut}>
+      <button className="office-btn danger shift-end-btn" onClick={() => {
+        const activeCount = shift.slots.filter(s => s.status === 'active').length;
+        const msg = activeCount > 0
+          ? `End shift "${shift.officeName}" and kill ${activeCount} active agent${activeCount !== 1 ? 's' : ''}?`
+          : `End shift "${shift.officeName}"?`;
+        if (window.confirm(msg)) onBadgeOut();
+      }}>
         {shift.status === 'review' ? 'Approve & End Shift' : 'End Shift'}
       </button>
     </div>

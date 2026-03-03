@@ -14,6 +14,7 @@ import type { PersonaContext } from './swarm-prompts.js';
 import { injectMessage } from './pty-writer.js';
 import { startScheduler, stopScheduler } from './cron-scheduler.js';
 import { getProjectPath } from '../routes/project.js';
+import { isGitRepo, createWorktree } from './worktree.js';
 
 export type ShiftSlotStatus = 'pending' | 'booting' | 'active' | 'failed' | 'ended';
 export type ShiftStatus = 'starting' | 'active' | 'review' | 'ending' | 'ended';
@@ -24,6 +25,8 @@ export interface ShiftSlotState {
   functionalRole: FunctionalRole;
   status: ShiftSlotStatus;
   sessionId?: string;
+  worktreeBranch?: string;
+  worktreePath?: string;
   error?: string;
   retryCount?: number;
 }
@@ -83,10 +86,22 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
   const leadIndex = office.slots.findIndex(s => s.functionalRole === 'tech-lead');
   const effectiveLeadIndex = leadIndex >= 0 ? leadIndex : 0;
 
+  const spawnMode = office.spawnMode ?? 'eager';
+
   // Boot agents sequentially with stagger
   for (let i = 0; i < office.slots.length; i++) {
     const slot = office.slots[i];
     const slotState = shift.slots[i];
+
+    // In demand mode, skip non-lead slots unless explicitly marked autoSpawn
+    if (spawnMode === 'demand') {
+      const isLeadSlot = i === effectiveLeadIndex;
+      if (!isLeadSlot && slot.autoSpawn !== true) {
+        slotState.status = 'pending';
+        emitShiftProgress(office.id, i, slot.name, 'pending');
+        continue;
+      }
+    }
 
     // Skip if already running (verify session actually exists, not just stale registry)
     const existingMember = getMemberByName(slot.name);
@@ -156,10 +171,33 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         slotInstructions: slot.instructions,
       };
 
+      // Create per-agent worktree if enabled
+      let agentProjectPath = projectPath;
+      let worktreeBranch: string | undefined;
+
+      const worktreeMode = office.worktreeMode ?? 'per-agent';
+      const slotUseWorktree = slot.useWorktree !== false;
+
+      if (worktreeMode === 'per-agent' && slotUseWorktree && projectPath && isGitRepo(projectPath)) {
+        const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const safeName = slot.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+        const branch = `swarm/${safeName}/${date}`;
+        try {
+          const wt = createWorktree(projectPath, branch);
+          agentProjectPath = wt.path;
+          worktreeBranch = branch;
+          slotState.worktreeBranch = branch;
+          slotState.worktreePath = wt.path;
+        } catch (err) {
+          console.warn(`Worktree creation failed for ${slot.name}, using shared checkout:`, err);
+        }
+      }
+
       spawnSession(
         sessionId, cliType, 80, 24, agent,
         executionMode, permissionMode, swarmRole,
-        projectPath, slot.functionalRole, office.pipeline, personaCtx,
+        agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
+        worktreeBranch,
       );
 
       addMember({
@@ -184,6 +222,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         executionMode,
         swarmRole,
         functionalRole: slot.functionalRole,
+        worktreeBranch,
       });
 
       // For non-Claude/non-bash agents, inject orientation after the CLI has initialized
@@ -191,7 +230,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         const swarmApiUrl = executionMode === 'docker'
           ? `http://host.docker.internal:${PORT}`
           : `http://localhost:${PORT}`;
-        const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, projectPath, undefined, slot.functionalRole, personaCtx);
+        const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx);
         setTimeout(() => injectMessage(sessionId, orientation), 2000);
       }
 
@@ -232,6 +271,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
     return ids;
   };
   startScheduler(office, resolveTargets, injectMessage);
+  startIdleMonitor(office);
 
   // Send kickoff message to the lead agent
   const leadSlot = shift.slots[effectiveLeadIndex];
@@ -306,6 +346,7 @@ export async function badgeOut(): Promise<ShiftState | null> {
   if (!activeShift) return null;
 
   stopScheduler();
+  stopIdleMonitor();
   activeShift.status = 'ending';
   emitShiftStatus(activeShift);
 
@@ -326,6 +367,15 @@ export async function badgeOut(): Promise<ShiftState | null> {
   // that created sessions the shift-manager doesn't track)
   for (const member of getMembers()) {
     removeMember(member.sessionId);
+  }
+
+  // Log preserved worktrees for human review
+  const worktreeSummary = activeShift.slots
+    .filter(s => s.worktreeBranch)
+    .map(s => `  ${s.name}: ${s.worktreeBranch}`)
+    .join('\n');
+  if (worktreeSummary) {
+    console.log(`Shift worktrees preserved:\n${worktreeSummary}`);
   }
 
   activeShift.status = 'ended';
@@ -388,10 +438,15 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
         slotSoul: slot.soul, slotMemory: slot.memory, slotInstructions: slot.instructions,
       };
 
+      // Reuse existing worktree from slotState if available
+      const respawnProjectPath = slotState.worktreePath || projectPath;
+      const respawnWorktreeBranch = slotState.worktreeBranch;
+
       spawnSession(
         newSessionId, cliType, 80, 24, agent,
         slot.executionMode || 'local', slot.permissionMode || 'autonomous', swarmRole,
-        projectPath, slot.functionalRole, office.pipeline, personaCtx,
+        respawnProjectPath, slot.functionalRole, office.pipeline, personaCtx,
+        respawnWorktreeBranch,
       );
 
       addMember({
@@ -415,6 +470,7 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
         executionMode: slot.executionMode || 'local',
         swarmRole,
         functionalRole: slot.functionalRole,
+        worktreeBranch: respawnWorktreeBranch,
       });
 
       // Inject orientation for non-Claude/non-bash agents (2s delay for CLI init)
@@ -422,7 +478,7 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
         const swarmApiUrl = (slot.executionMode || 'local') === 'docker'
           ? `http://host.docker.internal:${PORT}`
           : `http://localhost:${PORT}`;
-        const orientation = buildOrientationMessage(swarmRole, agent.name, newSessionId, swarmApiUrl, projectPath, undefined, slot.functionalRole, personaCtx);
+        const orientation = buildOrientationMessage(swarmRole, agent.name, newSessionId, swarmApiUrl, respawnProjectPath, respawnWorktreeBranch, slot.functionalRole, personaCtx);
         setTimeout(() => injectMessage(newSessionId, orientation), 2000);
       }
 
@@ -473,4 +529,211 @@ export function markReadyForReview(sessionId: string, summary: string): { succes
     summary,
   });
   return { success: true };
+}
+
+// --- Idle auto-dismiss ---
+let idleMonitorTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startIdleMonitor(office: Office): void {
+  const minutes = office.idleDismissMinutes ?? 0;
+  if (minutes <= 0) return;
+
+  stopIdleMonitor();
+  const thresholdMs = minutes * 60 * 1000;
+
+  idleMonitorTimer = setInterval(async () => {
+    if (!activeShift || activeShift.status !== 'active') return;
+
+    const leadIndex = office.slots.findIndex(s => s.functionalRole === 'tech-lead');
+    const effectiveLeadIndex = leadIndex >= 0 ? leadIndex : 0;
+    const { listTasks } = await import('./task-board.js');
+
+    for (const slotState of activeShift.slots) {
+      if (slotState.status !== 'active' || !slotState.sessionId) continue;
+      if (slotState.slotIndex === effectiveLeadIndex) continue; // never dismiss lead
+
+      const session = sessions.get(slotState.sessionId);
+      if (!session) continue;
+
+      const idleMs = Date.now() - session.lastDataAt.getTime();
+      if (idleMs < thresholdMs) continue;
+
+      // Check if agent has any open or in-progress tasks
+      const agentTasks = await listTasks({
+        assignedTo: slotState.name,
+        officeId: activeShift.officeId,
+      });
+      const hasActiveTasks = agentTasks.some(t => t.status === 'open' || t.status === 'in-progress');
+      if (hasActiveTasks) continue;
+
+      // Dismiss the idle agent
+      try {
+        killSession(slotState.sessionId);
+      } catch { /* already dead */ }
+
+      removeMember(slotState.sessionId);
+      slotState.status = 'ended';
+      slotState.error = `Auto-dismissed after ${minutes}m idle`;
+      emitShiftProgress(activeShift.officeId, slotState.slotIndex, slotState.name, 'ended');
+      fireWebhook('agent:dismissed', { agentName: slotState.name, reason: 'idle', idleMinutes: minutes });
+
+      // Notify lead
+      const leadSlot = activeShift.slots[effectiveLeadIndex];
+      if (leadSlot?.sessionId) {
+        injectMessage(leadSlot.sessionId, `[SWARM SYSTEM]: ${slotState.name} auto-dismissed after ${minutes}m idle with no tasks.`);
+      }
+
+      console.log(`Auto-dismissed ${slotState.name} after ${minutes}m idle`);
+    }
+  }, 60_000); // check every 60s
+}
+
+export function stopIdleMonitor(): void {
+  if (idleMonitorTimer) {
+    clearInterval(idleMonitorTimer);
+    idleMonitorTimer = null;
+  }
+}
+
+/** Spawn a single pending (unbooted) slot on demand */
+export async function spawnSlotOnDemand(slotIndex: number): Promise<ShiftSlotState | null> {
+  if (!activeShift || activeShift.status !== 'active') return null;
+  const slotState = activeShift.slots[slotIndex];
+  if (!slotState || slotState.status !== 'pending') return null;
+
+  const office = await getOffice(activeShift.officeId);
+  if (!office) return null;
+
+  const slot = office.slots[slotIndex];
+  if (!slot) return null;
+
+  const projectPath = office.projectPath || getProjectPath() || undefined;
+  const allAgents = await listAgents();
+
+  slotState.status = 'booting';
+  emitShiftProgress(office.id, slotIndex, slot.name, 'booting');
+
+  try {
+    // Resolve or create agent identity (same logic as badgeIn)
+    const existing = allAgents.find(a => a.name.toLowerCase() === slot.name.toLowerCase());
+    let agent: { id: string; name: string; email: string };
+
+    if (existing) {
+      agent = { id: existing.id, name: existing.name, email: existing.email };
+    } else {
+      const id = nanoid(8);
+      let email = '';
+      let inboxId = '';
+      try {
+        const inbox = await provisionInbox(slot.name);
+        if (inbox) { email = inbox.email; inboxId = inbox.inboxId; }
+      } catch { /* graceful degradation */ }
+
+      const now = new Date().toISOString();
+      await saveAgent({
+        id, name: slot.name, email, inboxId,
+        credentials: {},
+        defaultCliType: slot.cliType,
+        createdAt: now, updatedAt: now,
+      });
+      agent = { id, name: slot.name, email };
+    }
+
+    const sessionId = randomUUID();
+    const cliType = slot.cliType as CliType;
+    const leadIndex = office.slots.findIndex(s => s.functionalRole === 'tech-lead');
+    const effectiveLeadIndex = leadIndex >= 0 ? leadIndex : 0;
+    const swarmRole: SwarmRole = slotIndex === effectiveLeadIndex ? 'lead' : 'worker';
+    const permissionMode = slot.permissionMode || 'autonomous';
+    const executionMode = slot.executionMode || 'local';
+
+    const agentIdentity = existing || allAgents.find(a => a.name.toLowerCase() === slot.name.toLowerCase());
+    const personaCtx: PersonaContext = {
+      agentSoul: agentIdentity?.soul,
+      agentMemory: agentIdentity?.memory,
+      agentInstructions: agentIdentity?.instructions,
+      officeSoul: office.soul,
+      officeMemory: office.memory,
+      officeInstructions: office.instructions,
+      slotSoul: slot.soul,
+      slotMemory: slot.memory,
+      slotInstructions: slot.instructions,
+    };
+
+    // Create worktree if enabled
+    let agentProjectPath = projectPath;
+    let worktreeBranch: string | undefined;
+
+    const worktreeMode = office.worktreeMode ?? 'per-agent';
+    const slotUseWorktree = slot.useWorktree !== false;
+
+    if (worktreeMode === 'per-agent' && slotUseWorktree && projectPath && isGitRepo(projectPath)) {
+      const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const safeName = slot.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      const branch = `swarm/${safeName}/${date}`;
+      try {
+        const wt = createWorktree(projectPath, branch);
+        agentProjectPath = wt.path;
+        worktreeBranch = branch;
+        slotState.worktreeBranch = branch;
+        slotState.worktreePath = wt.path;
+      } catch (err) {
+        console.warn(`Worktree creation failed for ${slot.name}, using shared checkout:`, err);
+      }
+    }
+
+    spawnSession(
+      sessionId, cliType, 80, 24, agent,
+      executionMode, permissionMode, swarmRole,
+      agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
+      worktreeBranch,
+    );
+
+    addMember({
+      sessionId,
+      agentId: agent.id,
+      agentName: agent.name,
+      agentEmail: agent.email,
+      cliType,
+      executionMode,
+      role: swarmRole,
+      functionalRole: slot.functionalRole,
+      joinedAt: new Date().toISOString(),
+    });
+
+    swarmEvents.emit('session:spawned', {
+      sessionId,
+      agentId: agent.id,
+      agentName: agent.name,
+      agentEmail: agent.email,
+      cliType,
+      executionMode,
+      swarmRole,
+      functionalRole: slot.functionalRole,
+      worktreeBranch,
+    });
+
+    if (cliType !== 'claude' && cliType !== 'bash') {
+      const swarmApiUrl = executionMode === 'docker'
+        ? `http://host.docker.internal:${PORT}`
+        : `http://localhost:${PORT}`;
+      const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx);
+      setTimeout(() => injectMessage(sessionId, orientation), 2000);
+    }
+
+    slotState.status = 'active';
+    slotState.sessionId = sessionId;
+    emitShiftProgress(office.id, slotIndex, slot.name, 'active', sessionId);
+
+    console.log(`On-demand spawned ${slot.name} (slot ${slotIndex})`);
+    return slotState;
+
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    slotState.status = 'failed';
+    slotState.error = message;
+    emitShiftProgress(office.id, slotIndex, slot.name, 'failed', undefined, message);
+    console.error(`On-demand spawn failed for ${slot.name}:`, message);
+    return null;
+  }
 }

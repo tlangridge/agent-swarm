@@ -300,12 +300,19 @@ export default function PipelinePanel({ tasks, stages, onMoveTask }: Props) {
                                   {effectiveStages[stageIndex + 1].name} &#9654;
                                 </button>
                               )}
-                              {task.status !== 'done' && (
+                              {task.status !== 'done' ? (
                                 <button
                                   className="pipeline-move-btn pipeline-done-btn"
                                   onClick={() => handleMove(task.id, { status: 'done' })}
                                 >
                                   &#10003; Done
+                                </button>
+                              ) : (
+                                <button
+                                  className="pipeline-move-btn pipeline-reopen-btn"
+                                  onClick={() => handleMove(task.id, { status: 'open' })}
+                                >
+                                  &#8634; Reopen
                                 </button>
                               )}
                             </div>

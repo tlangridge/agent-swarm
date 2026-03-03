@@ -118,9 +118,10 @@ Workflow:
 8. When you open a PR: \`swarm task update <id> --pr <number> --pr-url <url>\`
 9. If working on a GitHub issue: \`swarm task update <id> --issue <number> --issue-url <url>\`
 10. If you discover something important: \`swarm append findings.md --content "..."\`
-11. Mark complete: \`swarm task done <id> --output "summary of what was done"\`
-12. If blocked/failing: \`swarm task fail <id> reason\`
-13. Check for next task
+11. VERIFY before completing: \`swarm task verify <id> npm test\` (or appropriate build/test command)
+12. Mark complete: \`swarm task done <id> --output "summary of what was done"\`
+13. If blocked/failing: \`swarm task fail <id> reason\`
+14. Check for next task
 ${workContext}
 Use the \`swarm\` CLI for all team coordination. Run \`swarm help\` for commands.
 

@@ -52,7 +52,16 @@ officeRoutes.put('/:id', async (req, res) => {
 
   const { name, slots, pipeline, cronJobs, projectPath, soul, memory, instructions } = req.body;
   if (name !== undefined) existing.name = name;
-  if (slots !== undefined) existing.slots = slots;
+  if (slots !== undefined) {
+    // Clean null context fields from slot objects
+    existing.slots = slots.map((s: Record<string, unknown>) => {
+      const cleaned = { ...s };
+      for (const key of ['soul', 'memory', 'instructions']) {
+        if (cleaned[key] === null) delete cleaned[key];
+      }
+      return cleaned;
+    });
+  }
   if (pipeline !== undefined) existing.pipeline = pipeline;
   if (cronJobs !== undefined) existing.cronJobs = cronJobs;
   if (projectPath !== undefined) existing.projectPath = projectPath || undefined;

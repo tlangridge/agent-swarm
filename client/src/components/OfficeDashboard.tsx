@@ -92,7 +92,13 @@ export default function OfficeDashboard({ offices, activeShift, agents, onBadgeI
           </div>
           <button
             className="office-btn danger"
-            onClick={() => onBadgeOut(activeShift.officeId)}
+            onClick={() => {
+              const activeCount = activeShift.slots.filter(s => s.status === 'active').length;
+              const msg = activeCount > 0
+                ? `End shift "${activeShift.officeName}" and kill ${activeCount} active agent${activeCount !== 1 ? 's' : ''}?`
+                : `End shift "${activeShift.officeName}"?`;
+              if (window.confirm(msg)) onBadgeOut(activeShift.officeId);
+            }}
           >
             End Shift
           </button>

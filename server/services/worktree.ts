@@ -260,6 +260,95 @@ export function normalizeFsPath(inputPath: string): string {
   return resolved;
 }
 
+export interface DiffStat {
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  files: string[];
+}
+
+/** Get diff stat (files changed, insertions, deletions) for a worktree vs its base branch */
+export function getWorktreeDiffStat(worktreePath: string, baseBranch?: string): DiffStat {
+  const base = baseBranch || 'HEAD~1';
+  // Use --merge-base to diff against the common ancestor
+  const args = ['diff', '--numstat'];
+  // If no explicit base, diff against HEAD (uncommitted changes)
+  if (!baseBranch) {
+    args.push('HEAD');
+  } else {
+    args.push('--merge-base', base);
+  }
+
+  let output: string;
+  try {
+    output = execFileSync('git', args, {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+    });
+  } catch {
+    // Fall back to simple diff if merge-base fails (e.g. new repo)
+    try {
+      output = execFileSync('git', ['diff', '--numstat', 'HEAD'], {
+        cwd: worktreePath,
+        encoding: 'utf-8',
+      });
+    } catch {
+      return { filesChanged: 0, insertions: 0, deletions: 0, files: [] };
+    }
+  }
+
+  const files: string[] = [];
+  let insertions = 0;
+  let deletions = 0;
+
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length < 3) continue;
+    const added = parseInt(parts[0]) || 0;
+    const removed = parseInt(parts[1]) || 0;
+    insertions += added;
+    deletions += removed;
+    files.push(parts[2]);
+  }
+
+  return { filesChanged: files.length, insertions, deletions, files };
+}
+
+/** Get truncated diff patch for a worktree */
+export function getWorktreeDiffPatch(worktreePath: string, baseBranch?: string, maxBytes = 10240): string {
+  const args = ['diff'];
+  if (!baseBranch) {
+    args.push('HEAD');
+  } else {
+    args.push('--merge-base', baseBranch);
+  }
+
+  let output: string;
+  try {
+    output = execFileSync('git', args, {
+      cwd: worktreePath,
+      encoding: 'utf-8',
+      maxBuffer: maxBytes * 2,
+    });
+  } catch {
+    try {
+      output = execFileSync('git', ['diff', 'HEAD'], {
+        cwd: worktreePath,
+        encoding: 'utf-8',
+        maxBuffer: maxBytes * 2,
+      });
+    } catch {
+      return '';
+    }
+  }
+
+  if (output.length > maxBytes) {
+    return output.slice(0, maxBytes) + '\n... (truncated)';
+  }
+  return output;
+}
+
 export function getWorktreeStatus(worktreePath: string, fileLimit = 500): WorktreeStatusResult {
   const statusOutput = execFileSync('git', ['status', '--porcelain', '-uall'], {
     cwd: worktreePath,

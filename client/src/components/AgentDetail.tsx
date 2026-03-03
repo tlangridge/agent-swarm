@@ -101,10 +101,10 @@ export default function AgentDetail({ agent, offices, onUpdate, onDelete, onUpda
   const saveAgentContext = async () => {
     setSavingAgentContext(true);
     await onUpdate(agent.id, {
-      soul: editAgentSoul.trim() || undefined,
-      memory: editAgentMemory.trim() || undefined,
-      instructions: editAgentInstructions.trim() || undefined,
-    });
+      soul: editAgentSoul.trim() || null,
+      memory: editAgentMemory.trim() || null,
+      instructions: editAgentInstructions.trim() || null,
+    } as any);
     setSavingAgentContext(false);
     setEditingAgentContext(false);
   };
@@ -129,19 +129,19 @@ export default function AgentDetail({ agent, offices, onUpdate, onDelete, onUpda
       if (s.name.toLowerCase() === agent.name.toLowerCase()) {
         return {
           ...s,
-          soul: editSlotSoul.trim() || undefined,
-          memory: editSlotMemory.trim() || undefined,
-          instructions: editSlotInstructions.trim() || undefined,
+          soul: editSlotSoul.trim() || null,
+          memory: editSlotMemory.trim() || null,
+          instructions: editSlotInstructions.trim() || null,
         };
       }
       return s;
     });
     await onUpdateOffice(office.id, {
       slots: updatedSlots,
-      soul: editOfficeSoul.trim() || undefined,
-      memory: editOfficeMemory.trim() || undefined,
-      instructions: editOfficeInstructions.trim() || undefined,
-    });
+      soul: editOfficeSoul.trim() || null,
+      memory: editOfficeMemory.trim() || null,
+      instructions: editOfficeInstructions.trim() || null,
+    } as any);
     setSavingContext(false);
     setEditingOfficeId(null);
   };

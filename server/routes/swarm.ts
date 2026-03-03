@@ -10,6 +10,8 @@ import type { CliType } from '../pty-manager.js';
 import { buildOrientationMessage } from '../services/swarm-prompts.js';
 import { getProjectPath } from './project.js';
 import { injectMessage } from '../services/pty-writer.js';
+import { getStructuredStatus } from '../services/activity-parser.js';
+import { getActiveShift, spawnSlotOnDemand } from '../services/shift-manager.js';
 
 export const swarmRoutes = Router();
 
@@ -67,6 +69,44 @@ swarmRoutes.get('/activity/:name', (req, res) => {
     idleSeconds,
     status: 'active',
   });
+});
+
+// GET /api/swarm/dashboard — Structured agent status for lead/dashboard
+swarmRoutes.get('/dashboard', async (_req, res) => {
+  const agents = await getStructuredStatus();
+  res.json({ agents, generatedAt: new Date().toISOString() });
+});
+
+// POST /api/swarm/summon — Spawn a pending (unbooted) shift slot by name
+swarmRoutes.post('/summon', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const { name } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: "Missing 'name' field" });
+  }
+
+  const shift = getActiveShift();
+  if (!shift) {
+    return res.status(400).json({ error: 'No active shift' });
+  }
+
+  const pendingSlot = shift.slots.find(
+    s => s.name.toLowerCase() === name.toLowerCase() && s.status === 'pending',
+  );
+  if (!pendingSlot) {
+    return res.status(404).json({ error: `No pending slot for "${name}"` });
+  }
+
+  const result = await spawnSlotOnDemand(pendingSlot.slotIndex);
+  if (!result) {
+    return res.status(500).json({ error: 'Failed to spawn slot' });
+  }
+
+  res.json({ spawned: true, slot: result });
 });
 
 // GET /api/swarm/agents — List active swarm members + available (inactive) agents

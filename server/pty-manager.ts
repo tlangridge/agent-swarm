@@ -24,6 +24,7 @@ export interface PtySession {
   executionMode: ExecutionMode;
   permissionMode: PermissionMode;
   containerName: string | null;
+  worktreeBranch: string | null;
   pty: IPty;
   cols: number;
   rows: number;
@@ -145,6 +146,7 @@ export function spawnSession(
   functionalRole?: FunctionalRole | null,
   pipeline?: PipelineStage[],
   personaCtx?: PersonaContext,
+  worktreeBranch?: string,
 ): PtySession {
   if (executionMode === 'docker') {
     return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx);
@@ -153,7 +155,7 @@ export function spawnSession(
 
   const swarmApiUrl = `http://localhost:${PORT}`;
   const shell = resolveCliPath(cliType);
-  const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl, effectiveProjectPath, undefined, functionalRole, pipeline, personaCtx);
+  const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl, effectiveProjectPath, worktreeBranch, functionalRole, pipeline, personaCtx);
 
   // Build env with full PATH from login shell
   const env: Record<string, string> = { ...process.env as Record<string, string> };
@@ -211,6 +213,7 @@ export function spawnSession(
     executionMode: 'local',
     permissionMode,
     containerName: null,
+    worktreeBranch: worktreeBranch ?? null,
     pty: ptyProcess,
     cols,
     rows,
@@ -370,6 +373,7 @@ function spawnDockerSession(
     executionMode: 'docker',
     permissionMode,
     containerName,
+    worktreeBranch: null,
     pty: ptyProcess,
     cols,
     rows,

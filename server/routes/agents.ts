@@ -68,6 +68,11 @@ agentRoutes.put('/:id', async (req, res) => {
     updatedAt: new Date().toISOString(),
   };
 
+  // Convert null values to undefined so they're stripped from the stored JSON
+  for (const key of ['soul', 'memory', 'instructions'] as const) {
+    if (updated[key] === null) updated[key] = undefined;
+  }
+
   await saveAgent(updated);
   res.json(updated);
 });

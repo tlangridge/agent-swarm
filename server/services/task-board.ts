@@ -6,6 +6,22 @@ import { nanoid } from 'nanoid';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TASKS_DIR = path.join(__dirname, '../../data/tasks');
 
+export interface VerificationRun {
+  command: string;
+  exitCode: number;
+  outputSnippet: string;
+  ranAt: string;
+}
+
+export interface CompletionReport {
+  agent: string;
+  branch?: string;
+  diffStat?: { filesChanged: number; insertions: number; deletions: number; files: string[] };
+  diffPatch?: string;
+  verificationRuns?: VerificationRun[];
+  generatedAt: string;
+}
+
 export interface TaskItem {
   id: string;
   title: string;
@@ -27,6 +43,7 @@ export interface TaskItem {
   prUrl?: string;
   issueNumber?: number;
   issueUrl?: string;
+  completionReport?: CompletionReport;
   createdAt: string;
   updatedAt: string;
 }
@@ -136,7 +153,7 @@ export async function createTask(data: {
 
 export async function updateTask(
   id: string,
-  updates: Partial<Pick<TaskItem, 'title' | 'description' | 'stage' | 'assignedTo' | 'status' | 'priority' | 'context' | 'tags' | 'parentTask' | 'dependsOn' | 'output' | 'branch' | 'prNumber' | 'prUrl' | 'issueNumber' | 'issueUrl'>>,
+  updates: Partial<Pick<TaskItem, 'title' | 'description' | 'stage' | 'assignedTo' | 'status' | 'priority' | 'context' | 'tags' | 'parentTask' | 'dependsOn' | 'output' | 'branch' | 'prNumber' | 'prUrl' | 'issueNumber' | 'issueUrl' | 'completionReport'>>,
 ): Promise<TaskItem | null> {
   const task = await getTask(id);
   if (!task) return null;
@@ -157,6 +174,31 @@ export async function updateTask(
   if (updates.prUrl !== undefined) task.prUrl = updates.prUrl;
   if (updates.issueNumber !== undefined) task.issueNumber = updates.issueNumber;
   if (updates.issueUrl !== undefined) task.issueUrl = updates.issueUrl;
+  if (updates.completionReport !== undefined) task.completionReport = updates.completionReport;
+  task.updatedAt = new Date().toISOString();
+
+  await fs.writeFile(path.join(TASKS_DIR, `${task.id}.json`), JSON.stringify(task, null, 2));
+  return task;
+}
+
+/** Append a verification run to a task's completion report */
+export async function addVerificationRun(
+  id: string,
+  run: VerificationRun,
+): Promise<TaskItem | null> {
+  const task = await getTask(id);
+  if (!task) return null;
+
+  if (!task.completionReport) {
+    task.completionReport = {
+      agent: task.assignedTo || 'Unknown',
+      generatedAt: new Date().toISOString(),
+    };
+  }
+  if (!task.completionReport.verificationRuns) {
+    task.completionReport.verificationRuns = [];
+  }
+  task.completionReport.verificationRuns.push(run);
   task.updatedAt = new Date().toISOString();
 
   await fs.writeFile(path.join(TASKS_DIR, `${task.id}.json`), JSON.stringify(task, null, 2));
