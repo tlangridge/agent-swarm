@@ -45,6 +45,23 @@ function resolveCliPath(cliType: CliType): string {
   if (cliType === 'bash') return process.env.SHELL || '/bin/bash';
   if (resolvedPaths[cliType]) return resolvedPaths[cliType]!;
 
+  // Preferred paths — check these FIRST before falling back to `which`
+  // This avoids picking up npm-installed versions that trigger self-update loops
+  const preferredPaths: Partial<Record<CliType, string[]>> = {
+    claude: [`${process.env.HOME}/.local/bin/claude`],
+    codex: ['/opt/homebrew/bin/codex', '/usr/local/bin/codex'],
+  };
+  for (const p of preferredPaths[cliType] || []) {
+    try {
+      execSync(`test -x "${p}"`, { stdio: 'ignore' });
+      resolvedPaths[cliType] = p;
+      console.log(`Resolved ${cliType} → ${p} (preferred)`);
+      return p;
+    } catch {
+      // not found, try next
+    }
+  }
+
   // Use login shell to resolve the binary path (picks up ~/.zprofile, ~/.zshrc PATH etc.)
   const shell = process.env.SHELL || '/bin/zsh';
   try {
