@@ -162,15 +162,15 @@ export default function App() {
     }
   }, [routeOfficeId]);
 
-  // Auto-focus first active shift if nothing focused
+  // Auto-focus first active shift only when shifts change (not on manual unfocus)
   useEffect(() => {
-    if (!focusedOfficeId && activeShifts.size > 0) {
+    if (!focusedOfficeIdRef.current && activeShifts.size > 0) {
       const firstShift = activeShifts.values().next().value;
       if (firstShift) {
         setFocusedOfficeId(firstShift.officeId);
       }
     }
-  }, [activeShifts, focusedOfficeId]);
+  }, [activeShifts]);
 
   // Mark notifications read when focusing an office
   useEffect(() => {

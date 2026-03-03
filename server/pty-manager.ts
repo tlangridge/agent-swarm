@@ -161,6 +161,7 @@ export function spawnSession(
 
   // Build env with full PATH from login shell
   const env: Record<string, string> = { ...process.env as Record<string, string> };
+  delete env.CLAUDECODE; // Allow Claude Code to launch from within a Claude Code session
 
   // Add swarm CLI and common bin dirs to PATH
   const cliDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli');
