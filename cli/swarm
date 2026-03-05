@@ -20,10 +20,42 @@ json_string() {
 }
 
 api_get()      { curl -s "$API$1"; }
-api_get_auth() { require_sid; curl -s -H "X-Session-Id: $SID" "$API$1"; }
-api_post()     { require_sid; curl -s -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1"; }
-api_put()      { require_sid; curl -s -X PUT  -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1"; }
-api_delete()   { require_sid; curl -s -X DELETE -H "X-Session-Id: $SID" "$API$1"; }
+api_get_auth() {
+  require_sid
+  local response http_code body
+  response=$(curl -s -w "\n%{http_code}" -H "X-Session-Id: $SID" "$API$1")
+  http_code=$(echo "$response" | tail -1)
+  body=$(echo "$response" | sed '$d')
+  echo "$body"
+  [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ] || return 1
+}
+api_post() {
+  require_sid
+  local response http_code body
+  response=$(curl -s -w "\n%{http_code}" -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
+  http_code=$(echo "$response" | tail -1)
+  body=$(echo "$response" | sed '$d')
+  echo "$body"
+  [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ] || return 1
+}
+api_put() {
+  require_sid
+  local response http_code body
+  response=$(curl -s -w "\n%{http_code}" -X PUT -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
+  http_code=$(echo "$response" | tail -1)
+  body=$(echo "$response" | sed '$d')
+  echo "$body"
+  [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ] || return 1
+}
+api_delete() {
+  require_sid
+  local response http_code body
+  response=$(curl -s -w "\n%{http_code}" -X DELETE -H "X-Session-Id: $SID" "$API$1")
+  http_code=$(echo "$response" | tail -1)
+  body=$(echo "$response" | sed '$d')
+  echo "$body"
+  [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ] || return 1
+}
 
 # ── commands ─────────────────────────────────────────────────────────────────
 

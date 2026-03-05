@@ -20,7 +20,7 @@ export interface WorkspaceIndex {
   updatedAt: string;
 }
 
-const ALLOWED_EXTENSIONS = new Set(['.md', '.txt', '.json']);
+const ALLOWED_EXTENSIONS = new Set(['.md', '.txt', '.json', '.log']);
 
 /**
  * Sanitize and validate a workspace file path.

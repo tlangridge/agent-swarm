@@ -2,7 +2,7 @@ import { Router, type Request } from 'express';
 import { nanoid } from 'nanoid';
 import { getMember, getMembers } from '../services/swarm-registry.js';
 import type { FunctionalRole } from '../services/swarm-registry.js';
-import { getActiveShift } from '../services/shift-manager.js';
+import { getActiveShift, getShiftBySessionId } from '../services/shift-manager.js';
 import { getOffice, saveOffice } from '../services/office-store.js';
 import type { CronJob } from '../services/office-store.js';
 import { reloadScheduler, getSchedulerStatusWithOffice } from '../services/cron-scheduler.js';
@@ -50,6 +50,8 @@ async function getActiveOffice(req: Request) {
   if (sessionId) {
     const member = getMember(sessionId);
     if (member?.officeId) return getOffice(member.officeId);
+    const shift = getShiftBySessionId(sessionId);
+    if (shift) return getOffice(shift.officeId);
   }
   const shift = getActiveShift();
   return shift ? getOffice(shift.officeId) : null;

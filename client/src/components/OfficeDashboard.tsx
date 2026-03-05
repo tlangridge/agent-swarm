@@ -9,6 +9,7 @@ interface Props {
   agents: AgentIdentity[];
   onBadgeIn: (officeId: string) => void;
   onBadgeOut: (officeId: string) => void;
+  onCloseShift: (officeId: string) => void;
   onCreateOffice: (name: string, slots: any[], pipeline?: any[], context?: { projectPath?: string; soul?: string; memory?: string; instructions?: string; cronJobs?: any[] }) => Promise<any>;
   onUpdateOffice: (id: string, updates: Partial<Pick<Office, 'name' | 'slots' | 'pipeline' | 'cronJobs' | 'projectPath' | 'soul' | 'memory' | 'instructions'>>) => Promise<void>;
   onDeleteOffice: (id: string) => void;
@@ -56,7 +57,7 @@ function RoleBadge({ role }: { role: FunctionalRole }) {
   );
 }
 
-export default function OfficeDashboard({ offices, activeShifts, agents, onBadgeIn, onBadgeOut, onCreateOffice, onUpdateOffice, onDeleteOffice, onRefresh, onSelectOffice }: Props) {
+export default function OfficeDashboard({ offices, activeShifts, agents, onBadgeIn, onBadgeOut, onCloseShift, onCreateOffice, onUpdateOffice, onDeleteOffice, onRefresh, onSelectOffice }: Props) {
   const [showEditor, setShowEditor] = useState(false);
   const [editingOffice, setEditingOffice] = useState<Office | null>(null);
   const [deletingOffice, setDeletingOffice] = useState<Office | null>(null);
@@ -94,18 +95,32 @@ export default function OfficeDashboard({ offices, activeShifts, agents, onBadge
                     </div>
                   ))}
                 </div>
-                <button
-                  className="office-btn danger"
-                  onClick={() => {
-                    const activeCount = shift.slots.filter(s => s.status === 'active').length;
-                    const msg = activeCount > 0
-                      ? `End shift "${shift.officeName}" and kill ${activeCount} active agent${activeCount !== 1 ? 's' : ''}?`
-                      : `End shift "${shift.officeName}"?`;
-                    if (window.confirm(msg)) onBadgeOut(shift.officeId);
-                  }}
-                >
-                  End Shift
-                </button>
+                {shift.status === 'closing' ? (
+                  <button className="office-btn danger" onClick={() => {
+                    if (window.confirm(`Force end shift "${shift.officeName}" immediately?`)) onBadgeOut(shift.officeId);
+                  }}>
+                    Force End
+                  </button>
+                ) : (
+                  <>
+                    {(shift.status === 'active' || shift.status === 'review') && (
+                      <button className="office-btn primary" onClick={() => {
+                        if (window.confirm(`Close shift "${shift.officeName}"? Agents will have 60 seconds to write close-out notes.`)) onCloseShift(shift.officeId);
+                      }}>
+                        Close Shift
+                      </button>
+                    )}
+                    <button className="office-btn danger" onClick={() => {
+                      const activeCount = shift.slots.filter(s => s.status === 'active').length;
+                      const msg = activeCount > 0
+                        ? `End shift "${shift.officeName}" and kill ${activeCount} active agent${activeCount !== 1 ? 's' : ''}?`
+                        : `End shift "${shift.officeName}"?`;
+                      if (window.confirm(msg)) onBadgeOut(shift.officeId);
+                    }}>
+                      {shift.status === 'review' ? 'Approve & End Shift' : 'End Shift'}
+                    </button>
+                  </>
+                )}
               </div>
             ))}
         </div>

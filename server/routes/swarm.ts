@@ -14,6 +14,7 @@ import { getStructuredStatus } from '../services/activity-parser.js';
 import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand, rotateAgent } from '../services/shift-manager.js';
 import { getOfficeCostSummary, getGlobalCostSummary } from '../services/cost-tracker.js';
 import { listAvailableSkills } from '../services/skill-registry.js';
+import { appendFile } from '../services/workspace-files.js';
 
 export const swarmRoutes = Router();
 
@@ -369,4 +370,28 @@ swarmRoutes.post('/rotate/:name', async (req, res) => {
 // GET /api/swarm/skills — List all available skills
 swarmRoutes.get('/skills', (_req, res) => {
   res.json({ skills: listAvailableSkills() });
+});
+
+// POST /api/swarm/log — Append to shift activity log
+swarmRoutes.post('/log', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const { message } = req.body;
+  if (!message) {
+    return res.status(400).json({ error: "Missing 'message' field" });
+  }
+
+  const sender = getMember(senderSessionId)!;
+  const shift = getShiftBySessionId(senderSessionId) ?? getActiveShift(sender.officeId || undefined);
+  if (!shift) {
+    return res.status(400).json({ error: 'No active shift. Badge in first.' });
+  }
+
+  const timestamp = new Date().toISOString();
+  const entry = `[${timestamp}] (${sender.agentName || 'Anonymous'}): ${message}`;
+  const result = await appendFile(shift.officeId, 'activity-log.md', entry, sender.agentName || 'Anonymous');
+  res.json({ logged: true, entry: result });
 });

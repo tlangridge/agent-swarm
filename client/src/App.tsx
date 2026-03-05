@@ -1000,6 +1000,7 @@ export default function App() {
                       agents={agents}
                       onBadgeIn={handleBadgeIn}
                       onBadgeOut={handleBadgeOut}
+                      onCloseShift={handleCloseShift}
                       onCreateOffice={createOffice}
                       onUpdateOffice={updateOffice}
                       onDeleteOffice={deleteOffice}

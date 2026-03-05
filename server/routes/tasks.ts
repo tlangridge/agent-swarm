@@ -386,6 +386,30 @@ taskRoutes.get('/locks', (_req, res) => {
   res.json({ locks });
 });
 
+// GET /api/swarm/tasks/:id — Get a single task with dependency details
+taskRoutes.get('/:id', async (req, res) => {
+  const task = await getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  // Resolve dependency details
+  let dependencies: Array<{ id: string; title?: string; status?: string }> | undefined;
+  if (task.dependsOn && task.dependsOn.length > 0) {
+    dependencies = [];
+    for (const depId of task.dependsOn) {
+      const dep = await getTask(depId);
+      dependencies.push({ id: depId, title: dep?.title, status: dep?.status });
+    }
+  }
+
+  const lock = getCheckoutLock(task.id);
+  res.json({
+    ...task,
+    dependencies,
+    checkoutLive: task.checkoutSessionId ? sessions.has(task.checkoutSessionId) : undefined,
+    checkoutStale: lock ? isLockStale(lock) : undefined,
+  });
+});
+
 // DELETE /api/swarm/tasks/:id — Delete a task
 taskRoutes.delete('/:id', async (req, res) => {
   const senderSessionId = req.headers['x-session-id'] as string | undefined;
