@@ -16,6 +16,7 @@ import ShiftStatusBar from './components/ShiftStatusBar';
 import OfficeTabBar from './components/OfficeTabBar';
 import PipelinePanel from './components/PipelinePanel';
 import WorkflowPanel from './components/WorkflowPanel';
+import ApiKeyManager from './components/ApiKeyManager';
 import { useAgents } from './hooks/useAgents';
 import { useWorktrees } from './hooks/useWorktrees';
 import { useWorktreeOverview } from './hooks/useWorktreeOverview';
@@ -51,7 +52,7 @@ export default function App() {
   const pendingCreatesRef = useRef<Map<string, { agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string }>>(new Map());
   const pendingOutputRef = useRef<Map<string, string[]>>(new Map());
 
-  const [sidebarTab, setSidebarTab] = useState<'worktrees' | 'pipeline' | 'workflow'>('worktrees');
+  const [sidebarTab, setSidebarTab] = useState<'worktrees' | 'pipeline' | 'workflow' | 'config'>('worktrees');
   const [view, setView] = useState<'workspace' | 'agents'>('workspace');
   const [workspaceMode, setWorkspaceMode] = useState<'dashboard' | 'grid'>('dashboard');
   const [focusedSessionId, setFocusedSessionId] = useState<string | null>(null);
@@ -1192,6 +1193,12 @@ export default function App() {
                   >
                     Workflow
                   </button>
+                  <button
+                    className={`sidebar-tab ${sidebarTab === 'config' ? 'active' : ''}`}
+                    onClick={() => setSidebarTab('config')}
+                  >
+                    Config
+                  </button>
                 </div>
                 <div className="sidebar-tab-content">
                   {sidebarTab === 'worktrees' ? (
@@ -1208,9 +1215,17 @@ export default function App() {
                       stages={selectedOffice?.pipeline || []}
                       onMoveTask={moveTask}
                     />
-                  ) : (
+                  ) : sidebarTab === 'workflow' ? (
                     <WorkflowPanel activeShift={activeShift} />
-                  )}
+                  ) : sidebarTab === 'config' ? (
+                    selectedOfficeId ? (
+                      <ApiKeyManager scope="office" officeId={selectedOfficeId} />
+                    ) : (
+                      <div className="workflow-empty">
+                        <p>Select an office to manage its API keys.</p>
+                      </div>
+                    )
+                  ) : null}
                 </div>
               </div>
             </>

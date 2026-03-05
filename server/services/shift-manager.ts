@@ -721,7 +721,7 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       const respawnProjectPath = slotState.worktreePath || projectPath;
       const respawnWorktreeBranch = slotState.worktreeBranch;
 
-      const resolvedKeys = resolveKeysForSession(activeShift.officeId);
+      const resolvedKeys = resolveKeysForSession(shift.officeId);
       spawnSession(
         newSessionId, cliType, 80, 24, agent,
         slot.executionMode || 'local', slot.permissionMode || 'autonomous', swarmRole,
@@ -1013,7 +1013,7 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
       }
     }
 
-    const resolvedKeys = resolveKeysForSession(activeShift.officeId);
+    const resolvedKeys = resolveKeysForSession(shift.officeId);
     spawnSession(
       sessionId, cliType, 80, 24, agent,
       executionMode, permissionMode, swarmRole,

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ApiKeyManager from './ApiKeyManager';
 
 interface SettingsDialogProps {
   dockerAvailable: boolean;
@@ -25,6 +26,14 @@ export default function SettingsDialog({ dockerAvailable, dockerImageBuilt, onBu
         </div>
 
         <div className="modal-body">
+          <div className="settings-section">
+            <div className="settings-section-title">API Keys</div>
+            <p className="settings-description">
+              Global defaults &mdash; used by all offices unless overridden.
+            </p>
+            <ApiKeyManager scope="global" />
+          </div>
+
           <div className="settings-section">
             <div className="settings-section-title">Docker Sandbox</div>
 

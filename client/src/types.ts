@@ -373,3 +373,11 @@ export interface AgentStructuredStatus {
   budgetCents: number | null;
   budgetPercent: number | null;
 }
+
+// --- API Key Management ---
+
+export interface ApiKeyEntry {
+  name: string;
+  maskedValue: string;
+  source: 'office' | 'global' | 'env';
+}
