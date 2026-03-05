@@ -112,8 +112,8 @@ swarmEvents.on('shift:status', (data) => {
 
 // Broadcast cost updates to all browser clients
 swarmEvents.on('cost:update', (data) => {
-  for (const client of connectedClients) {
-    send(client, { type: 'cost:update', ...data });
+  for (const [ws] of connectedClients) {
+    send(ws, { type: 'cost:update', ...data });
   }
 });
 

@@ -740,7 +740,7 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       });
 
       // Initialize cost tracking for respawned session
-      initCostTracking(newSessionId, agent.name, activeShift.officeId, slot.budgetCents);
+      initCostTracking(newSessionId, agent.name, shift.officeId, slot.budgetCents);
 
       swarmEvents.emit('session:spawned', {
         sessionId: newSessionId,
