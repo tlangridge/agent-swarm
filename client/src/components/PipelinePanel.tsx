@@ -139,6 +139,28 @@ export default function PipelinePanel({ tasks, stages, onMoveTask }: Props) {
                           </span>
                         )}
                       </div>
+                      {task.checkoutSessionId && (
+                        <div className={`pipeline-card-checkout ${task.checkoutStale ? 'pipeline-checkout-stale' : ''} ${task.checkoutLive === false ? 'pipeline-checkout-dead' : ''}`}>
+                          <span className="pipeline-checkout-lock">&#128274;</span>
+                          <span className="pipeline-checkout-agent">{task.checkoutAgentName}</span>
+                          {task.checkoutStale && <span className="pipeline-checkout-badge stale">STALE</span>}
+                          {task.checkoutLive === false && <span className="pipeline-checkout-badge dead">DEAD</span>}
+                          {(task.checkoutStale || task.checkoutLive === false) && (
+                            <button
+                              className="pipeline-release-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                fetch(`/api/swarm/tasks/${task.id}/release`, {
+                                  method: 'POST',
+                                  headers: { 'X-Dashboard': 'true' },
+                                });
+                              }}
+                            >
+                              &#128275; Release
+                            </button>
+                          )}
+                        </div>
+                      )}
                       <div className="pipeline-card-meta">
                         {task.branch && (
                           <span className="pipeline-card-branch" title={`Branch: ${task.branch}`}>

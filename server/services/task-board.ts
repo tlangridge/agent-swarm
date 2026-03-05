@@ -44,6 +44,9 @@ export interface TaskItem {
   issueNumber?: number;
   issueUrl?: string;
   completionReport?: CompletionReport;
+  checkoutSessionId?: string;
+  checkoutAgentName?: string;
+  checkedOutAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -153,7 +156,7 @@ export async function createTask(data: {
 
 export async function updateTask(
   id: string,
-  updates: Partial<Pick<TaskItem, 'title' | 'description' | 'stage' | 'assignedTo' | 'status' | 'priority' | 'context' | 'tags' | 'parentTask' | 'dependsOn' | 'output' | 'branch' | 'prNumber' | 'prUrl' | 'issueNumber' | 'issueUrl' | 'completionReport'>>,
+  updates: Partial<Pick<TaskItem, 'title' | 'description' | 'stage' | 'assignedTo' | 'status' | 'priority' | 'context' | 'tags' | 'parentTask' | 'dependsOn' | 'output' | 'branch' | 'prNumber' | 'prUrl' | 'issueNumber' | 'issueUrl' | 'completionReport' | 'checkoutSessionId' | 'checkoutAgentName' | 'checkedOutAt'>>,
 ): Promise<TaskItem | null> {
   const task = await getTask(id);
   if (!task) return null;
@@ -175,6 +178,9 @@ export async function updateTask(
   if (updates.issueNumber !== undefined) task.issueNumber = updates.issueNumber;
   if (updates.issueUrl !== undefined) task.issueUrl = updates.issueUrl;
   if (updates.completionReport !== undefined) task.completionReport = updates.completionReport;
+  if (updates.checkoutSessionId !== undefined) task.checkoutSessionId = updates.checkoutSessionId || undefined;
+  if (updates.checkoutAgentName !== undefined) task.checkoutAgentName = updates.checkoutAgentName || undefined;
+  if (updates.checkedOutAt !== undefined) task.checkedOutAt = updates.checkedOutAt || undefined;
   task.updatedAt = new Date().toISOString();
 
   await fs.writeFile(path.join(TASKS_DIR, `${task.id}.json`), JSON.stringify(task, null, 2));
@@ -240,10 +246,10 @@ export async function areDependenciesMet(taskId: string): Promise<{ met: boolean
   return { met: blocking.length === 0, blocking };
 }
 
-/** Get tasks that are open AND have all dependencies satisfied */
+/** Get tasks that are open AND have all dependencies satisfied (excludes checked-out tasks) */
 export async function getReadyTasks(filters?: TaskFilters): Promise<TaskItem[]> {
   const allTasks = await listTasks(filters);
-  const openTasks = allTasks.filter(t => t.status === 'open');
+  const openTasks = allTasks.filter(t => t.status === 'open' && !checkoutLocks.has(t.id));
   const ready: TaskItem[] = [];
   for (const task of openTasks) {
     if (!task.dependsOn || task.dependsOn.length === 0) {
@@ -254,4 +260,181 @@ export async function getReadyTasks(filters?: TaskFilters): Promise<TaskItem[]> 
     if (met) ready.push(task);
   }
   return ready;
+}
+
+// ── Atomic checkout locks ────────────────────────────────────────────────────
+
+export interface CheckoutLock {
+  taskId: string;
+  sessionId: string;
+  agentName: string;
+  lockedAt: number;  // Date.now() for fast staleness math
+}
+
+// In-memory lock map: taskId -> CheckoutLock
+// Node.js is single-threaded, so Map check + set is inherently atomic.
+const checkoutLocks = new Map<string, CheckoutLock>();
+
+const STALE_LOCK_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+export function isLockStale(lock: CheckoutLock): boolean {
+  return Date.now() - lock.lockedAt > STALE_LOCK_THRESHOLD_MS;
+}
+
+/** Atomically checkout a task. Returns the lock on success, or conflict info. */
+export async function checkoutTask(
+  taskId: string,
+  sessionId: string,
+  agentName: string,
+): Promise<{ task: TaskItem; lock: CheckoutLock } | { conflict: CheckoutLock }> {
+  // Step 1: Check in-memory lock map (atomic in single-threaded Node.js)
+  const existingLock = checkoutLocks.get(taskId);
+  if (existingLock) {
+    // Idempotent: same session re-checking out the same task
+    if (existingLock.sessionId === sessionId) {
+      const task = await getTask(taskId);
+      if (!task) {
+        // Task was deleted while lock existed — clean up
+        checkoutLocks.delete(taskId);
+        return { conflict: existingLock };
+      }
+      return { task, lock: existingLock };
+    }
+    // Conflict: different session holds the lock
+    return { conflict: existingLock };
+  }
+
+  // Step 2: Read the task from disk
+  const task = await getTask(taskId);
+  if (!task || (task.status !== 'open' && task.status !== 'in-progress')) {
+    // Return a synthetic conflict if task doesn't exist or isn't available
+    return {
+      conflict: {
+        taskId,
+        sessionId: '',
+        agentName: '',
+        lockedAt: 0,
+      },
+    };
+  }
+
+  // Step 3: Check dependency satisfaction
+  const { met, blocking } = await areDependenciesMet(taskId);
+  if (!met) {
+    return {
+      conflict: {
+        taskId,
+        sessionId: '',
+        agentName: `deps-unmet:${blocking.join(',')}`,
+        lockedAt: 0,
+      },
+    };
+  }
+
+  // Step 4: Set the in-memory lock
+  const now = Date.now();
+  const lock: CheckoutLock = { taskId, sessionId, agentName, lockedAt: now };
+  checkoutLocks.set(taskId, lock);
+
+  // Step 5: Update task on disk
+  try {
+    const updated = await updateTask(taskId, {
+      assignedTo: agentName,
+      status: 'in-progress',
+      checkoutSessionId: sessionId,
+      checkoutAgentName: agentName,
+      checkedOutAt: new Date(now).toISOString(),
+    });
+    if (!updated) {
+      // Rollback in-memory lock on disk write failure
+      checkoutLocks.delete(taskId);
+      return {
+        conflict: { taskId, sessionId: '', agentName: '', lockedAt: 0 },
+      };
+    }
+    return { task: updated, lock };
+  } catch (err) {
+    // Rollback in-memory lock on disk write failure
+    checkoutLocks.delete(taskId);
+    throw err;
+  }
+}
+
+/** Release a checkout lock. Returns true if released. */
+export async function releaseCheckout(taskId: string, sessionId?: string): Promise<boolean> {
+  const lock = checkoutLocks.get(taskId);
+  if (!lock) return false;
+
+  // If sessionId provided, only release if it matches
+  if (sessionId && lock.sessionId !== sessionId) return false;
+
+  // Remove from in-memory map
+  checkoutLocks.delete(taskId);
+
+  // Clear checkout fields on disk; reset in-progress tasks to open
+  const task = await getTask(taskId);
+  if (task) {
+    const updates: Partial<Pick<TaskItem, 'checkoutSessionId' | 'checkoutAgentName' | 'checkedOutAt' | 'status' | 'assignedTo'>> = {
+      checkoutSessionId: '',
+      checkoutAgentName: '',
+      checkedOutAt: '',
+    };
+    if (task.status === 'in-progress') {
+      updates.status = 'open';
+      updates.assignedTo = '';
+    }
+    await updateTask(taskId, updates);
+  }
+
+  return true;
+}
+
+/** Release all checkouts held by a given session (for session exit). */
+export async function releaseSessionCheckouts(sessionId: string): Promise<string[]> {
+  const releasedTaskIds: string[] = [];
+  for (const [taskId, lock] of checkoutLocks) {
+    if (lock.sessionId === sessionId) {
+      await releaseCheckout(taskId, sessionId);
+      releasedTaskIds.push(taskId);
+    }
+  }
+  return releasedTaskIds;
+}
+
+/** Get the lock for a task (if any). */
+export function getCheckoutLock(taskId: string): CheckoutLock | undefined {
+  return checkoutLocks.get(taskId);
+}
+
+/** Get all active locks. */
+export function getAllCheckoutLocks(): CheckoutLock[] {
+  return Array.from(checkoutLocks.values());
+}
+
+/** Rehydrate lock map from disk on startup. */
+export async function rehydrateCheckoutLocks(): Promise<void> {
+  await ensureDir();
+  const files = await fs.readdir(TASKS_DIR);
+  let rehydrated = 0;
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      const data = await fs.readFile(path.join(TASKS_DIR, f), 'utf-8');
+      const task: TaskItem = JSON.parse(data);
+      if (task.checkoutSessionId && task.checkedOutAt) {
+        checkoutLocks.set(task.id, {
+          taskId: task.id,
+          sessionId: task.checkoutSessionId,
+          agentName: task.checkoutAgentName || 'Unknown',
+          lockedAt: new Date(task.checkedOutAt).getTime(),
+        });
+        rehydrated++;
+      }
+    } catch {
+      // Skip unparseable files
+    }
+  }
+  if (rehydrated > 0) {
+    console.log(`task-board: rehydrated ${rehydrated} checkout lock(s) from disk`);
+  }
 }

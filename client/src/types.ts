@@ -148,6 +148,11 @@ export interface TaskItem {
   prUrl?: string;
   issueNumber?: number;
   issueUrl?: string;
+  checkoutSessionId?: string;
+  checkoutAgentName?: string;
+  checkedOutAt?: string;
+  checkoutLive?: boolean;
+  checkoutStale?: boolean;
   createdAt: string;
   updatedAt: string;
 }

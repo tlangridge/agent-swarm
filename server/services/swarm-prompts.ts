@@ -137,7 +137,7 @@ Workflow:
 2. If no tasks assigned: WAIT. The lead will assign you work via \`[SWARM from <lead>]\` messages or task assignment.
 3. Read context: \`swarm context\`
 4. Check shared findings: \`swarm read findings.md\` for team discoveries before starting work
-5. Pick a task: \`swarm task pick <id>\` (if deps unmet, pick a ready task: \`swarm tasks --ready\`)
+5. Pick a task: \`swarm task pick <id>\` (atomically locks the task to your session — if you get 409 CONFLICT, pick another with \`swarm tasks --ready\`)
 6. Do the work (in your worktree branch)
 7. Link your branch: \`swarm task update <id> --branch <your-branch>\`
 8. When you open a PR: \`swarm task update <id> --pr <number> --pr-url <url>\`
@@ -401,7 +401,7 @@ export function buildOrientationMessage(
       '1. Check your tasks: `swarm tasks --mine`',
       '2. If no tasks assigned: WAIT. The lead will message you or assign tasks.',
       '3. Read context: `swarm context`',
-      '4. Pick a task: `swarm task pick <id>`',
+      '4. Pick a task: `swarm task pick <id>` (atomically locks to you; 409 = already taken)',
       '5. Do the work',
       '6. Mark complete: `swarm task done <id> --output "summary"`',
       '7. Check for next task',

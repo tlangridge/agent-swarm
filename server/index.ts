@@ -18,6 +18,7 @@ import { detectDocker, isDockerAvailable, isImageBuilt, buildImage } from './doc
 import { persistStateNow } from './services/session-persistence.js';
 import { migrateFromRosters } from './services/office-store.js';
 import { initNotificationManager, getNotifications } from './services/notification-manager.js';
+import { rehydrateCheckoutLocks } from './services/task-board.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3010', 10);
@@ -136,6 +137,7 @@ server.listen(PORT, async () => {
   }
 
   await migrateFromRosters();
+  await rehydrateCheckoutLocks();
   console.log(`Agent Swarm server on http://localhost:${PORT}`);
   console.log(`WebSocket on ws://localhost:${PORT}/ws`);
   validateCliTools();

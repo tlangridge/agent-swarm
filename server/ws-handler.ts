@@ -12,6 +12,7 @@ import { registerSession, unregisterSession, injectMessage } from './services/pt
 import { schedulePersistState } from './services/session-persistence.js';
 import { handleSlotExit } from './services/shift-manager.js';
 import { onCompaction } from './services/context-monitor.js';
+import { releaseSessionCheckouts } from './services/task-board.js';
 
 type PermissionMode = 'autonomous' | 'regular';
 interface CreateMsg { type: 'create'; requestId?: string; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; executionMode?: ExecutionMode; permissionMode?: PermissionMode; swarmRole?: SwarmRole; functionalRole?: FunctionalRole | null; projectPath?: string; cols: number; rows: number }
@@ -157,6 +158,22 @@ function bridgeSession(sessionId: string): void {
   });
 
   session.pty.onExit(({ exitCode }: { exitCode: number }) => {
+    // Release any task checkout locks held by this session
+    const member = getMember(sessionId);
+    releaseSessionCheckouts(sessionId).then(releasedTaskIds => {
+      if (releasedTaskIds.length > 0) {
+        console.log(`Auto-released ${releasedTaskIds.length} checkout(s) for exited session ${sessionId}`);
+        const leadId = getLeadSessionId();
+        if (leadId && leadId !== sessionId) {
+          injectMessage(leadId,
+            `[SWARM SYSTEM]: ${member?.agentName || sessionId} exited. ` +
+            `Auto-released checkout locks on task(s): ${releasedTaskIds.join(', ')}. ` +
+            `These tasks are available for reassignment.`
+          );
+        }
+      }
+    }).catch(err => console.error('Failed to release session checkouts:', err));
+
     // Try auto-respawn if this session belongs to an active shift
     handleSlotExit(sessionId, exitCode).catch(err => {
       console.error('handleSlotExit error:', err);
@@ -317,6 +334,12 @@ export function handleWebSocket(ws: WebSocket): void {
       }
 
       case 'kill': {
+        // Release checkout locks before killing the session
+        releaseSessionCheckouts(msg.sessionId).then(releasedTaskIds => {
+          if (releasedTaskIds.length > 0) {
+            console.log(`Released ${releasedTaskIds.length} checkout(s) for killed session ${msg.sessionId}`);
+          }
+        }).catch(err => console.error('Failed to release session checkouts on kill:', err));
         killSession(msg.sessionId);
         removeMember(msg.sessionId);
         sessionBridges.delete(msg.sessionId);

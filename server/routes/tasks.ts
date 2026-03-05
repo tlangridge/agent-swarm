@@ -1,13 +1,26 @@
 import { Router } from 'express';
 import { getMember, getMemberByName, getLeadSessionId, recordTaskSuccess, recordTaskFailure, canAcceptTask } from '../services/swarm-registry.js';
-import { listTasks, getTask, createTask, updateTask, deleteTask, areDependenciesMet, getReadyTasks, addVerificationRun } from '../services/task-board.js';
-import type { CompletionReport } from '../services/task-board.js';
+import { listTasks, getTask, createTask, updateTask, deleteTask, areDependenciesMet, getReadyTasks, addVerificationRun, checkoutTask, releaseCheckout, getCheckoutLock, getAllCheckoutLocks, isLockStale } from '../services/task-board.js';
+import type { CompletionReport, CheckoutLock } from '../services/task-board.js';
 import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand } from '../services/shift-manager.js';
 import { injectMessage } from '../services/pty-writer.js';
 import { sessions } from '../pty-manager.js';
 import { isGitRepo, getWorktreeDiffStat, getWorktreeDiffPatch } from '../services/worktree.js';
 
 export const taskRoutes = Router();
+
+/** Annotate tasks with checkout liveness info for the dashboard */
+function annotateCheckoutLiveness(tasks: import('../services/task-board.js').TaskItem[]) {
+  return tasks.map(task => {
+    if (!task.checkoutSessionId) return task;
+    const lock = getCheckoutLock(task.id);
+    return {
+      ...task,
+      checkoutLive: sessions.has(task.checkoutSessionId),
+      checkoutStale: lock ? isLockStale(lock) : false,
+    };
+  });
+}
 
 // GET /api/swarm/tasks — List tasks (filterable by ?stage=&assignedTo=&status=&priority=)
 // No auth required for listing — the UI dashboard polls this endpoint
@@ -36,11 +49,11 @@ taskRoutes.get('/', async (req, res) => {
   // ?ready=true returns only open tasks with all dependencies satisfied
   if (req.query.ready === 'true') {
     const tasks = await getReadyTasks(filters);
-    return res.json({ tasks });
+    return res.json({ tasks: annotateCheckoutLiveness(tasks) });
   }
 
   const tasks = await listTasks(filters);
-  res.json({ tasks });
+  res.json({ tasks: annotateCheckoutLiveness(tasks) });
 });
 
 // POST /api/swarm/tasks — Create a task
@@ -110,7 +123,18 @@ taskRoutes.put('/:id', async (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
+  // Guard: don't allow reassignment of locked tasks (unless dashboard)
   const { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl } = req.body;
+  if (assignedTo !== undefined) {
+    const lock = getCheckoutLock(req.params.id);
+    if (lock && lock.sessionId !== senderSessionId && !isDashboard) {
+      return res.status(409).json({
+        error: 'Task is checked out by another agent',
+        checkedOutBy: lock.agentName,
+        checkoutSessionId: lock.sessionId,
+      });
+    }
+  }
   const task = await updateTask(req.params.id, { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl });
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
@@ -135,7 +159,7 @@ taskRoutes.put('/:id', async (req, res) => {
   res.json(task);
 });
 
-// POST /api/swarm/tasks/:id/pick — Self-assign task + set to in-progress
+// POST /api/swarm/tasks/:id/pick — Atomically checkout task + set to in-progress
 taskRoutes.post('/:id/pick', async (req, res) => {
   const senderSessionId = req.headers['x-session-id'] as string | undefined;
   if (!senderSessionId || !getMember(senderSessionId)) {
@@ -147,18 +171,29 @@ taskRoutes.post('/:id/pick', async (req, res) => {
     return res.status(429).json({ error: 'Agent circuit breaker is open due to consecutive failures. Wait for cooldown.' });
   }
 
-  // Gate on dependency satisfaction
-  const { met, blocking } = await areDependenciesMet(req.params.id);
-  if (!met) {
-    return res.status(409).json({ error: 'Task has unmet dependencies', blocking });
+  const sender = getMember(senderSessionId)!;
+  const result = await checkoutTask(
+    req.params.id, senderSessionId, sender.agentName || 'Anonymous',
+  );
+
+  if ('conflict' in result) {
+    // If sessionId is empty, it's a task-not-found or deps-unmet error
+    if (!result.conflict.sessionId) {
+      if (result.conflict.agentName.startsWith('deps-unmet:')) {
+        const blocking = result.conflict.agentName.replace('deps-unmet:', '').split(',');
+        return res.status(409).json({ error: 'Task has unmet dependencies', blocking });
+      }
+      return res.status(404).json({ error: 'Task not found or not available for pickup' });
+    }
+    return res.status(409).json({
+      error: 'Task is already checked out',
+      checkedOutBy: result.conflict.agentName,
+      checkoutSessionId: result.conflict.sessionId,
+      checkedOutAt: new Date(result.conflict.lockedAt).toISOString(),
+    });
   }
 
-  const sender = getMember(senderSessionId)!;
-  const task = await updateTask(req.params.id, {
-    assignedTo: sender.agentName || 'Anonymous',
-    status: 'in-progress',
-  });
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+  const task = result.task;
 
   // Inject upstream outputs if this task has dependencies
   if (task.dependsOn && task.dependsOn.length > 0) {
@@ -217,6 +252,9 @@ taskRoutes.post('/:id/done', async (req, res) => {
   updates.completionReport = report;
   const task = await updateTask(req.params.id, updates);
   if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  // Release checkout lock on completion
+  await releaseCheckout(req.params.id, senderSessionId);
 
   recordTaskSuccess(senderSessionId);
 
@@ -277,6 +315,9 @@ taskRoutes.post('/:id/fail', async (req, res) => {
   const task = await updateTask(req.params.id, { status: 'blocked' });
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
+  // Release checkout lock on failure
+  await releaseCheckout(req.params.id, senderSessionId);
+
   recordTaskFailure(senderSessionId);
 
   // Notify lead about the failure
@@ -310,6 +351,39 @@ taskRoutes.post('/:id/verify', async (req, res) => {
 
   if (!task) return res.status(404).json({ error: 'Task not found' });
   res.json(task);
+});
+
+// POST /api/swarm/tasks/:id/release — Force-release a checkout lock (lead or dashboard only)
+taskRoutes.post('/:id/release', async (req, res) => {
+  const isDashboard = req.headers['x-dashboard'] === 'true';
+  const senderSessionId = req.headers['x-session-id'] as string | undefined;
+
+  // Only dashboard or the lead can force-release
+  if (!isDashboard && senderSessionId) {
+    const sender = getMember(senderSessionId);
+    if (!sender || sender.role !== 'lead') {
+      return res.status(403).json({ error: 'Only the lead or dashboard can force-release' });
+    }
+  } else if (!isDashboard && !senderSessionId) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const released = await releaseCheckout(req.params.id);
+  if (!released) return res.status(404).json({ error: 'No active checkout on this task' });
+
+  const task = await getTask(req.params.id);
+  res.json({ released: true, task });
+});
+
+// GET /api/swarm/tasks/locks — List all active checkout locks
+taskRoutes.get('/locks', (_req, res) => {
+  const locks = getAllCheckoutLocks().map(lock => ({
+    ...lock,
+    stale: isLockStale(lock),
+    sessionAlive: sessions.has(lock.sessionId),
+    lockedAtISO: new Date(lock.lockedAt).toISOString(),
+  }));
+  res.json({ locks });
 });
 
 // DELETE /api/swarm/tasks/:id — Delete a task

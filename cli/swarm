@@ -223,7 +223,26 @@ cmd_task_update() {
 cmd_task_pick() {
   local id="${1:-}"
   [ -z "$id" ] && { echo "Usage: swarm task pick <id>" >&2; exit 1; }
-  api_post "/api/swarm/tasks/$id/pick" '{}'
+  local response http_code
+  response=$(require_sid; curl -s -w "\n%{http_code}" -X POST \
+    -H "Content-Type: application/json" -H "X-Session-Id: $SID" \
+    -d '{}' "$API/api/swarm/tasks/$id/pick")
+  http_code=$(echo "$response" | tail -1)
+  local body
+  body=$(echo "$response" | sed '$d')
+
+  if [ "$http_code" = "409" ]; then
+    echo "CONFLICT: Task $id is already checked out by another agent." >&2
+    echo "Use 'swarm tasks --ready' to find available tasks." >&2
+    echo "$body" >&2
+    exit 1
+  fi
+  if [ "$http_code" = "404" ]; then
+    echo "ERROR: Task $id not found or not available for pickup." >&2
+    echo "$body" >&2
+    exit 1
+  fi
+  echo "$body"
 }
 
 cmd_task_done() {

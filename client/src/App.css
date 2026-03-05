@@ -1467,6 +1467,63 @@ body {
 .pipeline-reopen-btn { color: #7aa2f7; border-color: #7aa2f744; }
 .pipeline-reopen-btn:hover { border-color: #7aa2f7; color: #7aa2f7; }
 
+/* Pipeline checkout lock indicators */
+.pipeline-card-checkout {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #ff9e64;
+  padding: 1px 0;
+}
+.pipeline-checkout-lock {
+  font-size: 9px;
+  flex-shrink: 0;
+}
+.pipeline-checkout-agent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pipeline-checkout-badge {
+  font-size: 8px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.pipeline-checkout-badge.stale {
+  background: #e0af6822;
+  color: #e0af68;
+}
+.pipeline-checkout-badge.dead {
+  background: #f7768e22;
+  color: #f7768e;
+}
+.pipeline-checkout-stale {
+  color: #e0af68;
+}
+.pipeline-checkout-dead {
+  color: #f7768e;
+}
+.pipeline-release-btn {
+  padding: 1px 6px;
+  font-size: 9px;
+  background: transparent;
+  color: #f7768e;
+  border: 1px solid #f7768e44;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.pipeline-release-btn:hover {
+  background: #f7768e11;
+  border-color: #f7768e;
+}
+
 /* Office card cron/pipeline info */
 .office-card-crons {
   display: flex;
