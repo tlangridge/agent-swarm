@@ -31,6 +31,14 @@ function stripAnsi(input: string): string {
   return input.replace(/\u001B\[[0-9;]*[A-Za-z]/g, '');
 }
 
+const TERMINAL_HISTORY_LIMIT = 200 * 1024; // 200KB per session
+
+function appendTerminalHistory(current: string, chunk: string): string {
+  const merged = current + chunk;
+  if (merged.length <= TERMINAL_HISTORY_LIMIT) return merged;
+  return merged.slice(-TERMINAL_HISTORY_LIMIT);
+}
+
 export default function App() {
   const [sessions, setSessions] = useState<Map<string, TerminalSession>>(new Map());
   const [showPicker, setShowPicker] = useState(false);
@@ -50,7 +58,7 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const writersRef = useRef<Map<string, (data: string) => void>>(new Map());
   const pendingCreatesRef = useRef<Map<string, { agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string }>>(new Map());
-  const pendingOutputRef = useRef<Map<string, string[]>>(new Map());
+  const terminalHistoryRef = useRef<Map<string, string>>(new Map());
 
   const [sidebarTab, setSidebarTab] = useState<'worktrees' | 'pipeline' | 'workflow' | 'config'>('worktrees');
   const [view, setView] = useState<'workspace' | 'agents'>('workspace');
@@ -138,6 +146,7 @@ export default function App() {
         if (session.officeId === officeId) {
           next.delete(id);
           writersRef.current.delete(id);
+          terminalHistoryRef.current.delete(id);
           outputPreviewsRef.current.delete(id);
           lastActivityRef.current.delete(id);
         }
@@ -327,13 +336,15 @@ export default function App() {
           case 'output': {
             const writer = writersRef.current.get(msg.sessionId);
             if (writer) {
-              writer(msg.data);
-            } else {
-              // Buffer for sessions whose terminal hasn't mounted yet
-              const pending = pendingOutputRef.current.get(msg.sessionId) || [];
-              pending.push(msg.data);
-              pendingOutputRef.current.set(msg.sessionId, pending);
+              try {
+                writer(msg.data);
+              } catch {
+                // Writer can become stale when a terminal unmounts.
+                writersRef.current.delete(msg.sessionId);
+              }
             }
+            const existingHistory = terminalHistoryRef.current.get(msg.sessionId) || '';
+            terminalHistoryRef.current.set(msg.sessionId, appendTerminalHistory(existingHistory, msg.data));
 
             // Update output preview buffer (ref only — synced to state every 500ms)
             {
@@ -350,6 +361,8 @@ export default function App() {
           case 'exited': {
             const writer = writersRef.current.get(msg.sessionId);
             if (writer) writer(`\r\n\x1b[90m[Process exited with code ${msg.exitCode}]\x1b[0m\r\n`);
+            writersRef.current.delete(msg.sessionId);
+            terminalHistoryRef.current.delete(msg.sessionId);
             outputPreviewsRef.current.delete(msg.sessionId);
             lastActivityRef.current.delete(msg.sessionId);
             setFocusedSessionId(prev => prev === msg.sessionId ? null : prev);
@@ -427,12 +440,12 @@ export default function App() {
               next.set(msg.sessionId, session);
               return next;
             });
-            // Only replay scrollback if terminal hasn't mounted yet (fresh page load).
-            // On WS reconnect without reload, writer already exists — skip to avoid duplication.
-            if (msg.scrollback && !writersRef.current.has(msg.sessionId)) {
-              const pending = pendingOutputRef.current.get(msg.sessionId) || [];
-              pending.push(msg.scrollback);
-              pendingOutputRef.current.set(msg.sessionId, pending);
+            // Keep per-session terminal history so remounts can fully rehydrate.
+            if (msg.scrollback) {
+              const existingHistory = terminalHistoryRef.current.get(msg.sessionId) || '';
+              if (msg.scrollback.length >= existingHistory.length) {
+                terminalHistoryRef.current.set(msg.sessionId, msg.scrollback);
+              }
             }
             // Seed output preview from scrollback
             if (msg.scrollback) {
@@ -486,6 +499,7 @@ export default function App() {
                     if (session.officeId === endedOfficeId) {
                       next.delete(id);
                       writersRef.current.delete(id);
+                      terminalHistoryRef.current.delete(id);
                       outputPreviewsRef.current.delete(id);
                       lastActivityRef.current.delete(id);
                     }
@@ -667,6 +681,7 @@ export default function App() {
     // Kill old session
     sendWs({ type: 'kill', sessionId });
     writersRef.current.delete(sessionId);
+    terminalHistoryRef.current.delete(sessionId);
     setSessions(prev => { const next = new Map(prev); next.delete(sessionId); return next; });
 
     // Re-create with same config
@@ -690,6 +705,7 @@ export default function App() {
   const handleCloseTerminal = useCallback((sessionId: string) => {
     sendWs({ type: 'kill', sessionId });
     writersRef.current.delete(sessionId);
+    terminalHistoryRef.current.delete(sessionId);
     outputPreviewsRef.current.delete(sessionId);
     lastActivityRef.current.delete(sessionId);
     setSessions(prev => {
@@ -710,12 +726,12 @@ export default function App() {
 
   const handleTerminalReady = useCallback((sessionId: string, write: (data: string) => void) => {
     writersRef.current.set(sessionId, write);
-    // Flush any buffered output (e.g. scrollback from restored sessions)
-    const pending = pendingOutputRef.current.get(sessionId);
-    if (pending) {
-      for (const data of pending) write(data);
-      pendingOutputRef.current.delete(sessionId);
-    }
+    const history = terminalHistoryRef.current.get(sessionId);
+    if (history) write(history);
+  }, []);
+
+  const handleTerminalDispose = useCallback((sessionId: string) => {
+    writersRef.current.delete(sessionId);
   }, []);
 
   const handleBroadcast = useCallback((text: string) => {
@@ -837,10 +853,11 @@ export default function App() {
           onInput={handleInput}
           onResize={handleResize}
           onTerminalReady={handleTerminalReady}
+          onTerminalDispose={handleTerminalDispose}
         />
       </MosaicWindow>
     );
-  }, [sessions, getTitle, handleCloseTerminal, handleRestartTerminal, handleInput, handleResize, handleTerminalReady, handleSetRole]);
+  }, [sessions, getTitle, handleCloseTerminal, handleRestartTerminal, handleInput, handleResize, handleTerminalReady, handleTerminalDispose, handleSetRole]);
 
   const handleOpenPicker = useCallback(() => {
     // Refresh worktrees when opening the picker
@@ -1079,6 +1096,7 @@ export default function App() {
                     onInput={handleInput}
                     onResize={handleResize}
                     onTerminalReady={handleTerminalReady}
+                    onTerminalDispose={handleTerminalDispose}
                   />
                 </div>
                 <div className="focused-split-sidebar">

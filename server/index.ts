@@ -22,9 +22,11 @@ import { initNotificationManager, getNotifications } from './services/notificati
 import { rehydrateCheckoutLocks } from './services/task-board.js';
 import { cleanupOrphanedSkillDirs } from './services/skill-injector.js';
 import { ensureKeyDirs } from './services/key-store.js';
+import { getServerInstanceId } from './services/instance-id.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3010', 10);
+const SERVER_INSTANCE_ID = getServerInstanceId();
 
 const app = express();
 // Custom JSON parser that sanitizes Unicode smart quotes before parsing.
@@ -51,6 +53,22 @@ app.use((req, res, next) => {
   });
   req.on('error', next);
 });
+app.use((req, res, next) => {
+  const header = req.headers['x-swarm-instance-id'];
+  if (!header) return next();
+  const provided = Array.isArray(header) ? header[0] : header;
+  if (!provided) return next();
+
+  if (provided !== SERVER_INSTANCE_ID) {
+    return res.status(409).json({
+      error: 'Swarm instance mismatch',
+      expectedInstanceId: SERVER_INSTANCE_ID,
+      providedInstanceId: provided,
+    });
+  }
+
+  next();
+});
 app.use('/api/agents', agentRoutes);
 app.use('/api/swarm', swarmRoutes);
 app.use('/api/swarm/tasks', taskRoutes);
@@ -68,7 +86,7 @@ app.get('/api/notifications', (req, res) => {
 });
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'agent-swarm' });
+  res.json({ ok: true, service: 'agent-swarm', instanceId: SERVER_INSTANCE_ID });
 });
 
 // Docker status endpoint
@@ -110,6 +128,27 @@ initNotificationManager();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', handleWebSocket);
+
+function handleServerStartupError(err: unknown): never {
+  const errno = err as NodeJS.ErrnoException;
+  if (errno?.code === 'EADDRINUSE') {
+    console.error(`\nFailed to start Agent Swarm: port ${PORT} is already in use.`);
+    console.error(`Current repo: ${process.cwd()}`);
+    console.error('Another local service (often another agent-swarm checkout) is already listening on this port.');
+    console.error('Set a unique PORT in this repo\'s .env, then restart both dev server and client.');
+    process.exit(1);
+  }
+  const message = errno?.message || 'unknown server error';
+  console.error(`\nFailed to start Agent Swarm server: ${message}`);
+  process.exit(1);
+}
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  handleServerStartupError(err);
+});
+wss.on('error', (err: Error) => {
+  handleServerStartupError(err);
+});
 
 async function verifyLocalRouting(port: number): Promise<void> {
   const urls = [`http://localhost:${port}/api/health`, `http://127.0.0.1:${port}/api/health`];

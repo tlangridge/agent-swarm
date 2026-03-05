@@ -10,8 +10,10 @@ import type { PersonaContext } from './services/swarm-prompts.js';
 import type { PipelineStage } from './services/office-store.js';
 import { getDefaultSkills } from './services/skill-registry.js';
 import { createSkillDir, cleanupSkillDir, cleanupAllSkillDirs } from './services/skill-injector.js';
+import { getServerInstanceId } from './services/instance-id.js';
 
 export const PORT = parseInt(process.env.PORT || '3010', 10);
+const SERVER_INSTANCE_ID = getServerInstanceId();
 
 export type CliType = 'bash' | 'claude' | 'gemini' | 'codex' | 'opencode';
 export type ExecutionMode = 'local' | 'docker';
@@ -217,6 +219,7 @@ export function spawnSession(
   // Swarm env vars
   env.AGENT_SWARM_SESSION_ID = id;
   env.SWARM_API_URL = swarmApiUrl;
+  env.SWARM_INSTANCE_ID = SERVER_INSTANCE_ID;
   env.AGENT_SWARM_ROLE = swarmRole;
 
   if (agent) {
@@ -380,6 +383,7 @@ function spawnDockerSession(
   // Swarm env vars
   dockerArgs.push('-e', `AGENT_SWARM_SESSION_ID=${id}`);
   dockerArgs.push('-e', `SWARM_API_URL=${swarmApiUrl}`);
+  dockerArgs.push('-e', `SWARM_INSTANCE_ID=${SERVER_INSTANCE_ID}`);
   dockerArgs.push('-e', `AGENT_SWARM_ROLE=${swarmRole}`);
 
   // Agent identity env vars

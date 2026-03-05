@@ -15,11 +15,38 @@ import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand, rotateAgent } f
 import { getOfficeCostSummary, getGlobalCostSummary } from '../services/cost-tracker.js';
 import { listAvailableSkills } from '../services/skill-registry.js';
 import { appendFile } from '../services/workspace-files.js';
+import { getServerInstanceId } from '../services/instance-id.js';
 
 export const swarmRoutes = Router();
+const SERVER_INSTANCE_ID = getServerInstanceId();
 
 function stripAnsi(input: string): string {
   return input.replace(/\u001B\[[0-9;]*[A-Za-z]/g, '');
+}
+
+function formatBugContent(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const body = payload as Record<string, unknown>;
+
+  const content = typeof body.content === 'string' ? body.content.trim() : '';
+  if (content) return content;
+
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  const details = typeof body.details === 'string' ? body.details.trim() : '';
+  const expected = typeof body.expected === 'string' ? body.expected.trim() : '';
+  const actual = typeof body.actual === 'string' ? body.actual.trim() : '';
+  const suggestion = typeof body.suggestion === 'string' ? body.suggestion.trim() : '';
+  const workingPath = typeof body.workingPath === 'string' ? body.workingPath.trim() : '';
+
+  const lines: string[] = [];
+  if (title) lines.push(`Title: ${title}`);
+  if (details) lines.push(`Details: ${details}`);
+  if (expected) lines.push(`Expected: ${expected}`);
+  if (actual) lines.push(`Actual: ${actual}`);
+  if (suggestion) lines.push(`Suggestion: ${suggestion}`);
+  if (workingPath) lines.push(`Working Path: ${workingPath}`);
+
+  return lines.length > 0 ? lines.join('\n') : null;
 }
 
 // GET /api/swarm/activity — Summary of ALL agents' recent output
@@ -370,6 +397,40 @@ swarmRoutes.post('/rotate/:name', async (req, res) => {
 // GET /api/swarm/skills — List all available skills
 swarmRoutes.get('/skills', (_req, res) => {
   res.json({ skills: listAvailableSkills() });
+});
+
+// POST /api/swarm/bugs — Append swarm-system bug report to workspace bugs.md
+swarmRoutes.post('/bugs', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const sender = getMember(senderSessionId)!;
+  const shift = getShiftBySessionId(senderSessionId) ?? getActiveShift(sender.officeId || undefined);
+  if (!shift) {
+    return res.status(400).json({ error: 'No active shift. Badge in first.' });
+  }
+
+  const formatted = formatBugContent(req.body);
+  if (!formatted) {
+    return res.status(400).json({
+      error: "Missing bug content. Provide 'content' or any of: title, details, expected, actual, suggestion.",
+    });
+  }
+
+  const timestamp = new Date().toISOString();
+  const author = sender.agentName || 'Anonymous';
+  const heading = `[${timestamp}] BUG (${author}) [office:${shift.officeId}] [instance:${SERVER_INSTANCE_ID}]`;
+  const entryText = `${heading}\n${formatted}`;
+
+  const entry = await appendFile(shift.officeId, 'bugs.md', entryText, author);
+  res.status(201).json({
+    logged: true,
+    officeId: shift.officeId,
+    instanceId: SERVER_INSTANCE_ID,
+    entry,
+  });
 });
 
 // POST /api/swarm/log — Append to shift activity log

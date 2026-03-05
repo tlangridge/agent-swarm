@@ -113,7 +113,7 @@ Use the \`swarm\` CLI for all team coordination. Run \`swarm help\` for availabl
 If you encounter bugs, friction, or have feature ideas for the swarm system itself
 (broken commands, missing capabilities, confusing behavior, workflow improvements),
 log them so the team can improve:
-  swarm append bugs.md --content "[BUG/FEATURE] <title>\\nDetails: <what happened, what you expected, suggestion>"
+  swarm bug "<title>" --details "<what happened>" --expected "<what you expected>" --suggestion "<suggested fix>"
 This is for swarm system issues only — not project bugs. Project bugs go through normal task workflow.
 
 Incoming messages appear as: [SWARM from <name>]: <message>
@@ -186,7 +186,7 @@ Use the \`swarm\` CLI for all team coordination. Run \`swarm help\` for commands
 If you encounter bugs, friction, or have feature ideas for the swarm system itself
 (broken commands, missing capabilities, confusing behavior, workflow improvements),
 log them so the team can improve:
-  swarm append bugs.md --content "[BUG/FEATURE] <title>\\nDetails: <what happened, what you expected, suggestion>"
+  swarm bug "<title>" --details "<what happened>" --expected "<what you expected>" --suggestion "<suggested fix>"
 This is for swarm system issues only — not project bugs. Project bugs go through normal task workflow.
 
 Incoming messages appear as: [SWARM from <name>]: <message>
@@ -419,7 +419,7 @@ export function buildOrientationMessage(
     '  swarm task pick <id>  — Self-assign and start a task',
     '  swarm task done <id>  — Mark task complete',
     '  swarm context         — Read workspace context',
-    '  swarm append bugs.md  — Report swarm system bugs or feature requests',
+    '  swarm bug "title"      — Report swarm system bugs or feature requests',
     '',
     'Incoming messages appear as: [SWARM from <name>]: <message>',
     '===========================',

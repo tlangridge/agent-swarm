@@ -9,9 +9,10 @@ interface TerminalWindowProps {
   onInput: (sessionId: string, data: string) => void;
   onResize: (sessionId: string, cols: number, rows: number) => void;
   onTerminalReady?: (sessionId: string, write: (data: string) => void) => void;
+  onTerminalDispose?: (sessionId: string) => void;
 }
 
-export default function TerminalWindow({ sessionId, onInput, onResize, onTerminalReady }: TerminalWindowProps) {
+export default function TerminalWindow({ sessionId, onInput, onResize, onTerminalReady, onTerminalDispose }: TerminalWindowProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -88,11 +89,12 @@ export default function TerminalWindow({ sessionId, onInput, onResize, onTermina
     return () => {
       if (fitTimeoutRef.current) clearTimeout(fitTimeoutRef.current);
       observer.disconnect();
+      if (onTerminalDispose) onTerminalDispose(sessionId);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [sessionId, onInput, onResize, onTerminalReady, debouncedFit]);
+  }, [sessionId, onInput, onResize, onTerminalReady, onTerminalDispose, debouncedFit]);
 
   return (
     <div

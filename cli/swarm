@@ -3,6 +3,7 @@ set -euo pipefail
 
 API="${SWARM_API_URL:-http://localhost:3010}"
 SID="${AGENT_SWARM_SESSION_ID:-}"
+INSTANCE_ID="${SWARM_INSTANCE_ID:-}"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -19,11 +20,19 @@ json_string() {
   printf '"%s"' "$s"
 }
 
-api_get()      { curl -s --max-time 10 "$API$1"; }
+curl_with_instance() {
+  if [ -n "$INSTANCE_ID" ]; then
+    curl -H "X-Swarm-Instance-Id: $INSTANCE_ID" "$@"
+  else
+    curl "$@"
+  fi
+}
+
+api_get()      { curl_with_instance -s --max-time 10 "$API$1"; }
 api_get_auth() {
   require_sid
   local response http_code body
-  response=$(curl -s --max-time 10 -w "\n%{http_code}" -H "X-Session-Id: $SID" "$API$1")
+  response=$(curl_with_instance -s --max-time 10 -w "\n%{http_code}" -H "X-Session-Id: $SID" "$API$1")
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
   echo "$body"
@@ -32,7 +41,7 @@ api_get_auth() {
 api_post() {
   require_sid
   local response http_code body
-  response=$(curl -s --max-time 10 -w "\n%{http_code}" -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
+  response=$(curl_with_instance -s --max-time 10 -w "\n%{http_code}" -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
   echo "$body"
@@ -41,7 +50,7 @@ api_post() {
 api_put() {
   require_sid
   local response http_code body
-  response=$(curl -s --max-time 10 -w "\n%{http_code}" -X PUT -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
+  response=$(curl_with_instance -s --max-time 10 -w "\n%{http_code}" -X PUT -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
   echo "$body"
@@ -50,7 +59,7 @@ api_put() {
 api_delete() {
   require_sid
   local response http_code body
-  response=$(curl -s --max-time 10 -w "\n%{http_code}" -X DELETE -H "X-Session-Id: $SID" "$API$1")
+  response=$(curl_with_instance -s --max-time 10 -w "\n%{http_code}" -X DELETE -H "X-Session-Id: $SID" "$API$1")
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
   echo "$body"
@@ -260,7 +269,7 @@ cmd_task_pick() {
   local id="${1:-}"
   [ -z "$id" ] && { echo "Usage: swarm task pick <id>" >&2; exit 1; }
   local response http_code
-  response=$(require_sid; curl -s -w "\n%{http_code}" -X POST \
+  response=$(require_sid; curl_with_instance -s -w "\n%{http_code}" -X POST \
     -H "Content-Type: application/json" -H "X-Session-Id: $SID" \
     -d '{}' "$API/api/swarm/tasks/$id/pick")
   http_code=$(echo "$response" | tail -1)
@@ -363,9 +372,47 @@ cmd_write() {
     [ -t 0 ] && { echo "Error: No --content and stdin is a terminal. Pipe content or use --content." >&2; exit 1; }
     content="$(cat)"
   fi
-  require_sid
-  curl -s -X PUT -H "Content-Type: application/json" -H "X-Session-Id: $SID" \
-    -d "{\"content\":$(json_string "$content")}" "$API/api/swarm/files/$fpath"
+  api_put "/api/swarm/files/$fpath" "{\"content\":$(json_string "$content")}"
+}
+
+is_bug_path() {
+  case "$1" in
+    bugs.md|*/bugs.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+cmd_bug() {
+  local title="" details="" expected="" actual="" suggestion="" content=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --title)      title="$2"; shift 2 ;;
+      --details)    details="$2"; shift 2 ;;
+      --expected)   expected="$2"; shift 2 ;;
+      --actual)     actual="$2"; shift 2 ;;
+      --suggestion) suggestion="$2"; shift 2 ;;
+      --content)    content="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *)  [ -z "$title" ] && title="$1" || details="${details:+$details }$1"; shift ;;
+    esac
+  done
+
+  if [ -z "$content" ] && [ -z "$title" ] && [ -z "$details" ] && [ -z "$expected" ] && [ -z "$actual" ] && [ -z "$suggestion" ]; then
+    echo "Usage: swarm bug <title> [--details \"...\"] [--expected \"...\"] [--actual \"...\"] [--suggestion \"...\"]" >&2
+    echo "       swarm bug --content \"raw bug text\"" >&2
+    exit 1
+  fi
+
+  local cwd
+  cwd="$(pwd)"
+  local body="{\"workingPath\":$(json_string "$cwd")"
+  [ -n "$content" ]    && body="$body,\"content\":$(json_string "$content")"
+  [ -n "$title" ]      && body="$body,\"title\":$(json_string "$title")"
+  [ -n "$details" ]    && body="$body,\"details\":$(json_string "$details")"
+  [ -n "$expected" ]   && body="$body,\"expected\":$(json_string "$expected")"
+  [ -n "$actual" ]     && body="$body,\"actual\":$(json_string "$actual")"
+  [ -n "$suggestion" ] && body="$body,\"suggestion\":$(json_string "$suggestion")"
+  api_post "/api/swarm/bugs" "$body}"
 }
 
 cmd_append() {
@@ -382,9 +429,11 @@ cmd_append() {
     [ -t 0 ] && { echo "Error: No --content and stdin is a terminal. Pipe content or use --content." >&2; exit 1; }
     content="$(cat)"
   fi
-  require_sid
-  curl -s -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" \
-    -d "{\"content\":$(json_string "$content")}" "$API/api/swarm/files/$fpath"
+  if is_bug_path "$fpath"; then
+    cmd_bug --content "$content"
+    return
+  fi
+  api_post "/api/swarm/files/$fpath" "{\"content\":$(json_string "$content")}"
 }
 
 cmd_log() {
@@ -441,6 +490,7 @@ COMMANDS
   read <path>                      Read a shared file
   write <path> --content "..."     Write a shared file (or pipe stdin)
   append <path> --content "..."    Append to a shared file (or pipe stdin)
+  bug <title> [--details "..."]    Report swarm-system bug/feature request
   log <message>                    Append to shift activity log
   context                          Read context.md
 
@@ -449,6 +499,7 @@ COMMANDS
 ENVIRONMENT
   SWARM_API_URL              Default: http://localhost:3010
   AGENT_SWARM_SESSION_ID     Required for authenticated endpoints
+  SWARM_INSTANCE_ID          Optional instance guard (auto-set in swarm agents)
 EOF
     return
   fi
@@ -471,6 +522,9 @@ EOF
     read)      echo "swarm read <path>"; echo "  GET /api/swarm/files/<path> -- read file contents." ;;
     write)     echo "swarm write <path> --content \"...\""; echo "  PUT /api/swarm/files/<path> -- also reads stdin: echo hi | swarm write f.txt" ;;
     append)    echo "swarm append <path> --content \"...\""; echo "  POST /api/swarm/files/<path> -- atomically append to a file. Also reads stdin." ;;
+    bug)       echo "swarm bug <title> [--details \"...\"] [--expected \"...\"] [--actual \"...\"] [--suggestion \"...\"]"
+               echo "swarm bug --content \"raw bug text\""
+               echo "  POST /api/swarm/bugs -- writes to workspace bugs.md with office/session context." ;;
     log)       echo "swarm log <message>"; echo "  POST /api/swarm/log -- append to shift activity log." ;;
     context)   echo "swarm context"; echo "  Shortcut for: swarm read context.md" ;;
     help)      echo "swarm help [command]" ;;
@@ -497,6 +551,7 @@ case "$cmd" in
   read)      cmd_read "$@" ;;
   write)     cmd_write "$@" ;;
   append)    cmd_append "$@" ;;
+  bug)       cmd_bug "$@" ;;
   log)       cmd_log "$@" ;;
   context)   cmd_context ;;
   help)      cmd_help "$@" ;;
