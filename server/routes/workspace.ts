@@ -1,12 +1,12 @@
 import { Router, type Request } from 'express';
 import { getMember } from '../services/swarm-registry.js';
-import { getActiveShift } from '../services/shift-manager.js';
+import { getShiftBySessionId } from '../services/shift-manager.js';
 import { listFiles, readFile, writeFile, appendFile, deleteFile } from '../services/workspace-files.js';
 
 export const workspaceRoutes = Router();
 
 /**
- * Resolve office ID from query param, sender header, or active shift.
+ * Resolve office ID from query param or sender session.
  */
 function getOfficeId(req: Request): string | null {
   const qId = req.query.officeId as string | undefined;
@@ -15,9 +15,10 @@ function getOfficeId(req: Request): string | null {
   if (sessionId) {
     const member = getMember(sessionId);
     if (member?.officeId) return member.officeId;
+    const shift = getShiftBySessionId(sessionId);
+    if (shift?.officeId) return shift.officeId;
   }
-  const shift = getActiveShift();
-  return shift?.officeId ?? null;
+  return null;
 }
 
 // GET /api/swarm/files — List all workspace files for the active office

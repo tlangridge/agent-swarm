@@ -2,7 +2,7 @@ import type { CronJob, Office } from './office-store.js';
 import type { FunctionalRole } from './swarm-registry.js';
 import { getOffice, saveOffice } from './office-store.js';
 
-type ResolveTargetsFn = (job: CronJob) => string[];
+type ResolveTargetsFn = (job: CronJob, officeId: string) => string[];
 type InjectFn = (sessionId: string, message: string) => void;
 
 interface ActiveTimer {
@@ -73,7 +73,7 @@ export function startScheduler(
     const nextRun = new Date(Date.now() + intervalMs);
 
     const interval = setInterval(async () => {
-      const targets = resolveTargets(job);
+      const targets = resolveTargets(job, office.id);
       if (targets.length === 0) return;
 
       const message = `[CRON ${job.name}]: ${job.prompt}`;

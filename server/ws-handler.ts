@@ -1,6 +1,6 @@
 import type { WebSocket } from 'ws';
 import { randomUUID } from 'crypto';
-import { spawnSession, resizeSession, killSession, sessions, PORT, MAX_SCROLLBACK } from './pty-manager.js';
+import { spawnSession, resizeSession, killSession, sessions, PORT, trimTerminalScrollback } from './pty-manager.js';
 import type { CliType, ExecutionMode, PtySession } from './pty-manager.js';
 import { addMember, removeMember, setRole, getMembers, getLeadSessionId, getMember, swarmEvents } from './services/swarm-registry.js';
 import type { SwarmRole, FunctionalRole } from './services/swarm-registry.js';
@@ -134,8 +134,8 @@ swarmEvents.on('member:role-changed', (member) => {
 function accumScrollback(session: PtySession, data: string): void {
   session.scrollback += data;
   session.totalOutputBytes += data.length;
-  if (session.scrollback.length > MAX_SCROLLBACK) {
-    session.scrollback = session.scrollback.slice(-MAX_SCROLLBACK);
+  if (session.scrollback.length > 0) {
+    session.scrollback = trimTerminalScrollback(session.scrollback);
   }
   session.lastDataAt = new Date();
 

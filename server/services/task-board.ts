@@ -1,10 +1,10 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { nanoid } from 'nanoid';
+import { getDataPath } from './data-root.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TASKS_DIR = path.join(__dirname, '../../data/tasks');
+const TASKS_DIR = getDataPath('tasks');
 
 export interface VerificationRun {
   command: string;
@@ -63,6 +63,34 @@ async function ensureDir(): Promise<void> {
   await fs.mkdir(TASKS_DIR, { recursive: true });
 }
 
+function taskFilePath(taskId: string): string {
+  return path.join(TASKS_DIR, `${taskId}.json`);
+}
+
+const taskWriteLocks = new Map<string, Promise<unknown>>();
+
+async function withTaskWriteLock<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
+  const prev = taskWriteLocks.get(taskId) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(operation);
+  taskWriteLocks.set(taskId, next);
+
+  try {
+    return await next;
+  } finally {
+    if (taskWriteLocks.get(taskId) === next) {
+      taskWriteLocks.delete(taskId);
+    }
+  }
+}
+
+async function writeTask(task: TaskItem): Promise<void> {
+  await ensureDir();
+  const filePath = taskFilePath(task.id);
+  const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+  await fs.writeFile(tmpPath, JSON.stringify(task, null, 2));
+  await fs.rename(tmpPath, filePath);
+}
+
 export async function listTasks(filters?: TaskFilters): Promise<TaskItem[]> {
   await ensureDir();
   const files = await fs.readdir(TASKS_DIR);
@@ -99,7 +127,7 @@ export async function listTasks(filters?: TaskFilters): Promise<TaskItem[]> {
 
 export async function getTask(id: string): Promise<TaskItem | undefined> {
   try {
-    const data = await fs.readFile(path.join(TASKS_DIR, `${id}.json`), 'utf-8');
+    const data = await fs.readFile(taskFilePath(id), 'utf-8');
     return JSON.parse(data);
   } catch {
     return undefined;
@@ -150,7 +178,9 @@ export async function createTask(data: {
     createdAt: now,
     updatedAt: now,
   };
-  await fs.writeFile(path.join(TASKS_DIR, `${task.id}.json`), JSON.stringify(task, null, 2));
+  await withTaskWriteLock(task.id, async () => {
+    await writeTask(task);
+  });
   return task;
 }
 
@@ -158,33 +188,35 @@ export async function updateTask(
   id: string,
   updates: Partial<Pick<TaskItem, 'title' | 'description' | 'stage' | 'assignedTo' | 'status' | 'priority' | 'context' | 'tags' | 'parentTask' | 'dependsOn' | 'output' | 'branch' | 'prNumber' | 'prUrl' | 'issueNumber' | 'issueUrl' | 'completionReport' | 'checkoutSessionId' | 'checkoutAgentName' | 'checkedOutAt'>>,
 ): Promise<TaskItem | null> {
-  const task = await getTask(id);
-  if (!task) return null;
+  return withTaskWriteLock(id, async () => {
+    const task = await getTask(id);
+    if (!task) return null;
 
-  if (updates.title !== undefined) task.title = updates.title;
-  if (updates.description !== undefined) task.description = updates.description;
-  if (updates.stage !== undefined) task.stage = updates.stage;
-  if (updates.assignedTo !== undefined) task.assignedTo = updates.assignedTo;
-  if (updates.status !== undefined) task.status = (updates.status as string) === 'archived' ? 'done' : updates.status;
-  if (updates.priority !== undefined) task.priority = updates.priority;
-  if (updates.context !== undefined) task.context = updates.context;
-  if (updates.tags !== undefined) task.tags = updates.tags;
-  if (updates.parentTask !== undefined) task.parentTask = updates.parentTask;
-  if (updates.dependsOn !== undefined) task.dependsOn = updates.dependsOn;
-  if (updates.output !== undefined) task.output = updates.output;
-  if (updates.branch !== undefined) task.branch = updates.branch;
-  if (updates.prNumber !== undefined) task.prNumber = updates.prNumber;
-  if (updates.prUrl !== undefined) task.prUrl = updates.prUrl;
-  if (updates.issueNumber !== undefined) task.issueNumber = updates.issueNumber;
-  if (updates.issueUrl !== undefined) task.issueUrl = updates.issueUrl;
-  if (updates.completionReport !== undefined) task.completionReport = updates.completionReport;
-  if (updates.checkoutSessionId !== undefined) task.checkoutSessionId = updates.checkoutSessionId || undefined;
-  if (updates.checkoutAgentName !== undefined) task.checkoutAgentName = updates.checkoutAgentName || undefined;
-  if (updates.checkedOutAt !== undefined) task.checkedOutAt = updates.checkedOutAt || undefined;
-  task.updatedAt = new Date().toISOString();
+    if (updates.title !== undefined) task.title = updates.title;
+    if (updates.description !== undefined) task.description = updates.description;
+    if (updates.stage !== undefined) task.stage = updates.stage;
+    if (updates.assignedTo !== undefined) task.assignedTo = updates.assignedTo;
+    if (updates.status !== undefined) task.status = (updates.status as string) === 'archived' ? 'done' : updates.status;
+    if (updates.priority !== undefined) task.priority = updates.priority;
+    if (updates.context !== undefined) task.context = updates.context;
+    if (updates.tags !== undefined) task.tags = updates.tags;
+    if (updates.parentTask !== undefined) task.parentTask = updates.parentTask;
+    if (updates.dependsOn !== undefined) task.dependsOn = updates.dependsOn;
+    if (updates.output !== undefined) task.output = updates.output;
+    if (updates.branch !== undefined) task.branch = updates.branch;
+    if (updates.prNumber !== undefined) task.prNumber = updates.prNumber;
+    if (updates.prUrl !== undefined) task.prUrl = updates.prUrl;
+    if (updates.issueNumber !== undefined) task.issueNumber = updates.issueNumber;
+    if (updates.issueUrl !== undefined) task.issueUrl = updates.issueUrl;
+    if (updates.completionReport !== undefined) task.completionReport = updates.completionReport;
+    if (updates.checkoutSessionId !== undefined) task.checkoutSessionId = updates.checkoutSessionId || undefined;
+    if (updates.checkoutAgentName !== undefined) task.checkoutAgentName = updates.checkoutAgentName || undefined;
+    if (updates.checkedOutAt !== undefined) task.checkedOutAt = updates.checkedOutAt || undefined;
+    task.updatedAt = new Date().toISOString();
 
-  await fs.writeFile(path.join(TASKS_DIR, `${task.id}.json`), JSON.stringify(task, null, 2));
-  return task;
+    await writeTask(task);
+    return task;
+  });
 }
 
 /** Append a verification run to a task's completion report */
@@ -192,32 +224,36 @@ export async function addVerificationRun(
   id: string,
   run: VerificationRun,
 ): Promise<TaskItem | null> {
-  const task = await getTask(id);
-  if (!task) return null;
+  return withTaskWriteLock(id, async () => {
+    const task = await getTask(id);
+    if (!task) return null;
 
-  if (!task.completionReport) {
-    task.completionReport = {
-      agent: task.assignedTo || 'Unknown',
-      generatedAt: new Date().toISOString(),
-    };
-  }
-  if (!task.completionReport.verificationRuns) {
-    task.completionReport.verificationRuns = [];
-  }
-  task.completionReport.verificationRuns.push(run);
-  task.updatedAt = new Date().toISOString();
+    if (!task.completionReport) {
+      task.completionReport = {
+        agent: task.assignedTo || 'Unknown',
+        generatedAt: new Date().toISOString(),
+      };
+    }
+    if (!task.completionReport.verificationRuns) {
+      task.completionReport.verificationRuns = [];
+    }
+    task.completionReport.verificationRuns.push(run);
+    task.updatedAt = new Date().toISOString();
 
-  await fs.writeFile(path.join(TASKS_DIR, `${task.id}.json`), JSON.stringify(task, null, 2));
-  return task;
+    await writeTask(task);
+    return task;
+  });
 }
 
 export async function deleteTask(id: string): Promise<boolean> {
-  try {
-    await fs.unlink(path.join(TASKS_DIR, `${id}.json`));
-    return true;
-  } catch {
-    return false;
-  }
+  return withTaskWriteLock(id, async () => {
+    try {
+      await fs.unlink(taskFilePath(id));
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 export async function clearTasks(): Promise<void> {
@@ -411,22 +447,55 @@ export function getAllCheckoutLocks(): CheckoutLock[] {
   return Array.from(checkoutLocks.values());
 }
 
+export async function releaseCheckoutsForSessionIds(sessionIds: Iterable<string>): Promise<string[]> {
+  const targets = new Set(Array.from(sessionIds).filter(Boolean));
+  const releasedTaskIds: string[] = [];
+  if (targets.size === 0) return releasedTaskIds;
+
+  for (const [taskId, lock] of checkoutLocks) {
+    if (!targets.has(lock.sessionId)) continue;
+    await releaseCheckout(taskId, lock.sessionId);
+    releasedTaskIds.push(taskId);
+  }
+
+  return releasedTaskIds;
+}
+
 /** Rehydrate lock map from disk on startup. */
-export async function rehydrateCheckoutLocks(): Promise<void> {
+export async function rehydrateCheckoutLocks(validSessionIds?: Set<string>): Promise<void> {
   await ensureDir();
   const files = await fs.readdir(TASKS_DIR);
   let rehydrated = 0;
+  let pruned = 0;
+  const enforceSessionIds = validSessionIds !== undefined;
   for (const f of files) {
     if (!f.endsWith('.json')) continue;
     try {
       const data = await fs.readFile(path.join(TASKS_DIR, f), 'utf-8');
       const task: TaskItem = JSON.parse(data);
       if (task.checkoutSessionId && task.checkedOutAt) {
+        const lockedAt = new Date(task.checkedOutAt).getTime();
+        const hasInvalidTimestamp = !Number.isFinite(lockedAt);
+        const missingSavedSession = enforceSessionIds && !validSessionIds.has(task.checkoutSessionId);
+        const staleAtStartup = !hasInvalidTimestamp && (Date.now() - lockedAt > STALE_LOCK_THRESHOLD_MS);
+
+        if (hasInvalidTimestamp || missingSavedSession || staleAtStartup) {
+          await updateTask(task.id, {
+            checkoutSessionId: '',
+            checkoutAgentName: '',
+            checkedOutAt: '',
+            status: task.status === 'in-progress' ? 'open' : task.status,
+            assignedTo: task.status === 'in-progress' ? '' : task.assignedTo,
+          });
+          pruned++;
+          continue;
+        }
+
         checkoutLocks.set(task.id, {
           taskId: task.id,
           sessionId: task.checkoutSessionId,
           agentName: task.checkoutAgentName || 'Unknown',
-          lockedAt: new Date(task.checkedOutAt).getTime(),
+          lockedAt,
         });
         rehydrated++;
       }
@@ -436,5 +505,8 @@ export async function rehydrateCheckoutLocks(): Promise<void> {
   }
   if (rehydrated > 0) {
     console.log(`task-board: rehydrated ${rehydrated} checkout lock(s) from disk`);
+  }
+  if (pruned > 0) {
+    console.log(`task-board: pruned ${pruned} stale or orphaned checkout lock(s) on startup`);
   }
 }

@@ -1,11 +1,9 @@
 import fs from 'fs';
-import path from 'path';
 import { randomUUID } from 'crypto';
-import { fileURLToPath } from 'url';
+import { getDataPath } from './data-root.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, '../../data');
-const INSTANCE_ID_PATH = path.join(DATA_DIR, '_instance-id');
+const DATA_DIR = getDataPath();
+const INSTANCE_ID_PATH = getDataPath('_instance-id');
 
 let cachedInstanceId: string | null = null;
 

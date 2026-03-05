@@ -109,7 +109,8 @@ export default function WorkflowPanel({ activeShift }: Props) {
     setLoadingFile(true);
     try {
       const encodedPath = path.split('/').map(encodeURIComponent).join('/');
-      const res = await fetch(`/api/swarm/files/${encodedPath}`);
+      const query = officeId ? `?officeId=${encodeURIComponent(officeId)}` : '';
+      const res = await fetch(`/api/swarm/files/${encodedPath}${query}`);
       if (res.ok) {
         const data = await res.json();
         setFileContent(data.content ?? '(empty)');

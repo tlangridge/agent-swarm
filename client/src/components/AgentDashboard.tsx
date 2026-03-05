@@ -7,6 +7,7 @@ interface AgentDashboardProps {
   swarmMembers: SwarmMember[];
   leadSessionId: string | null;
   activeShift: ShiftState | null;
+  officeId?: string | null;
   tasks: TaskItem[];
   outputPreviews: Map<string, string[]>;
   lastActivityAt: Map<string, number>;
@@ -17,7 +18,7 @@ interface AgentDashboardProps {
 }
 
 export default function AgentDashboard({
-  sessions, swarmMembers, leadSessionId, activeShift, tasks,
+  sessions, swarmMembers, leadSessionId, activeShift, officeId, tasks,
   outputPreviews, lastActivityAt,
   onFocusSession, onSetRole, onRestartSession, onCloseSession,
 }: AgentDashboardProps) {
@@ -25,8 +26,13 @@ export default function AgentDashboard({
   const [structuredStatus, setStructuredStatus] = useState<Map<string, AgentStructuredStatus>>(new Map());
 
   const fetchDashboard = useCallback(async () => {
+    if (!officeId) {
+      setStructuredStatus(new Map());
+      return;
+    }
+
     try {
-      const res = await fetch('/api/swarm/dashboard');
+      const res = await fetch(`/api/swarm/dashboard?officeId=${encodeURIComponent(officeId)}`);
       if (!res.ok) return;
       const data = await res.json();
       const map = new Map<string, AgentStructuredStatus>();
@@ -37,14 +43,17 @@ export default function AgentDashboard({
     } catch {
       // silently ignore fetch errors
     }
-  }, []);
+  }, [officeId]);
 
   useEffect(() => {
-    if (sessionList.length === 0) return;
+    if (!officeId || sessionList.length === 0) {
+      setStructuredStatus(new Map());
+      return;
+    }
     fetchDashboard();
     const timer = setInterval(fetchDashboard, 5000);
     return () => clearInterval(timer);
-  }, [fetchDashboard, sessionList.length]);
+  }, [fetchDashboard, officeId, sessionList.length]);
 
   const tasksByAgent = useMemo(() => {
     const map = new Map<string, TaskItem[]>();

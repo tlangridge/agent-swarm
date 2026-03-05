@@ -1,9 +1,8 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { getDataPath } from './data-root.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const KEYS_DIR = path.join(__dirname, '../../data/keys');
+const KEYS_DIR = getDataPath('keys');
 const OFFICES_KEYS_DIR = path.join(KEYS_DIR, 'offices');
 const GLOBAL_FILE = path.join(KEYS_DIR, 'global.json');
 

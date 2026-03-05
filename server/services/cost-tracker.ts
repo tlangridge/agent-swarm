@@ -149,7 +149,7 @@ function checkBudgetThresholds(sessionId: string, record: CostRecord): void {
     );
 
     // Notify lead
-    const leadId = getLeadSessionId();
+    const leadId = getLeadSessionId(record.officeId);
     if (leadId && leadId !== sessionId) {
       injectMessage(leadId,
         `[SWARM SYSTEM]: ${record.agentName} has EXCEEDED their budget. ` +
@@ -173,7 +173,7 @@ function checkBudgetThresholds(sessionId: string, record: CostRecord): void {
       `of your $${(record.budgetCents / 100).toFixed(2)} budget. Finish your current task and prepare to stop.`
     );
 
-    const leadId = getLeadSessionId();
+    const leadId = getLeadSessionId(record.officeId);
     if (leadId && leadId !== sessionId) {
       injectMessage(leadId,
         `[SWARM SYSTEM]: ${record.agentName} is at 95% of their budget ` +
@@ -196,7 +196,7 @@ function checkBudgetThresholds(sessionId: string, record: CostRecord): void {
       `of your $${(record.budgetCents / 100).toFixed(2)} budget. Be mindful of cost.`
     );
 
-    const leadId = getLeadSessionId();
+    const leadId = getLeadSessionId(record.officeId);
     if (leadId && leadId !== sessionId) {
       injectMessage(leadId,
         `[SWARM SYSTEM]: ${record.agentName} has used 80% of their budget ` +

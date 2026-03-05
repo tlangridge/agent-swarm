@@ -119,10 +119,11 @@ Opens the dashboard at `http://localhost:5173` with the API on port 3010.
 | Variable | Required | Description |
 |---|---|---|
 | `AGENTMAIL_API_KEY` | Recommended | [AgentMail](https://agentmail.to) API key for agent email provisioning |
+| `AGENT_SWARM_DATA_DIR` | No | Override the local state directory (`data/`) so multiple checkouts can share offices, tasks, workspace files, and session metadata |
 | `ANTHROPIC_API_KEY` | No | API key for Claude Code agents |
 | `OPENAI_API_KEY` | No | API key for Codex CLI agents |
 | `SWARM_CODEX_MODEL_LEAD` | No | Codex model for lead sessions (default: `gpt-5.4`) |
-| `SWARM_CODEX_MODEL_WORKER` | No | Codex model for worker sessions (default: `gpt-5.3-codex`) |
+| `SWARM_CODEX_MODEL_WORKER` | No | Codex model for worker sessions (default: `gpt-5.4`) |
 | `SWARM_CODEX_REASONING_EFFORT` | No | Codex reasoning effort for all roles (default: `xhigh`) |
 | `GOOGLE_API_KEY` | No | API key for Gemini CLI agents |
 | `GEMINI_API_KEY` | No | Alternative API key for Gemini CLI agents |
@@ -130,6 +131,7 @@ Opens the dashboard at `http://localhost:5173` with the API on port 3010.
 
 If you run multiple checkouts at once (for example `agent-swarm` and `agent-swarm-stable`), set a different `PORT` in each repo's `.env`.
 The frontend proxy follows that same `PORT` automatically.
+If you want both checkouts to use the same local offices/tasks/workspace data, point `AGENT_SWARM_DATA_DIR` at the same absolute directory in each `.env`.
 
 ## Usage
 

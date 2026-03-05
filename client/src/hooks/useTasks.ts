@@ -6,9 +6,13 @@ export function useTasks(connected: boolean, officeId?: string) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchTasks = useCallback(async () => {
+    if (!officeId) {
+      setTasks([]);
+      return;
+    }
+
     try {
-      const params = officeId ? `?officeId=${officeId}` : '';
-      const res = await fetch(`/api/swarm/tasks${params}`);
+      const res = await fetch(`/api/swarm/tasks?officeId=${encodeURIComponent(officeId)}`);
       if (!res.ok) return;
       const data = await res.json();
       setTasks(data.tasks || []);
@@ -19,23 +23,28 @@ export function useTasks(connected: boolean, officeId?: string) {
 
   // Auto-refresh every 5 seconds while connected
   useEffect(() => {
-    if (!connected) return;
+    if (!connected || !officeId) {
+      setTasks([]);
+      return;
+    }
     fetchTasks();
     intervalRef.current = setInterval(fetchTasks, 5000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [connected, fetchTasks]);
+  }, [connected, fetchTasks, officeId]);
 
   const moveTask = useCallback(async (taskId: string, updates: { stage?: string; status?: string }) => {
-    const res = await fetch(`/api/swarm/tasks/${taskId}`, {
+    if (!officeId) throw new Error('Missing office context');
+
+    const res = await fetch(`/api/swarm/tasks/${taskId}?officeId=${encodeURIComponent(officeId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'X-Dashboard': 'true' },
       body: JSON.stringify(updates),
     });
     if (!res.ok) throw new Error('Failed to update task');
     await fetchTasks();
-  }, [fetchTasks]);
+  }, [fetchTasks, officeId]);
 
   return { tasks, fetchTasks, moveTask };
 }

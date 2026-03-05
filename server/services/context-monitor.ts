@@ -12,9 +12,37 @@ const monitors = new Map<string, ReturnType<typeof setInterval>>();
 // Fresh sessions produce lots of startup output that isn't real context usage.
 const MIN_AGE_MS = 2 * 60 * 1000;
 
+function stripAnsi(input: string): string {
+  return input
+    .replace(/\u001B\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, '')
+    .replace(/\r/g, '');
+}
+
+function parseLatestCodexContextLeft(scrollback: string): number | null {
+  const cleaned = stripAnsi(scrollback);
+  const pattern = /(\d{1,3})%\s+(?:context\s+)?left\b/gi;
+  let match: RegExpExecArray | null;
+  let lastSeen: number | null = null;
+
+  while ((match = pattern.exec(cleaned)) !== null) {
+    const value = Number.parseInt(match[1], 10);
+    if (Number.isFinite(value) && value >= 0 && value <= 100) {
+      lastSeen = value;
+    }
+  }
+
+  return lastSeen;
+}
+
 export function computeContextHealth(sessionId: string): number {
   const session = sessions.get(sessionId);
   if (!session) return 0;
+
+  if (session.cliType === 'codex') {
+    const reported = parseLatestCodexContextLeft(session.scrollback);
+    if (reported !== null) return reported;
+  }
 
   // Grace period: brand-new sessions are always "healthy"
   const ageMs = Date.now() - session.createdAt.getTime();

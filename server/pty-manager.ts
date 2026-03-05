@@ -11,6 +11,7 @@ import type { PipelineStage } from './services/office-store.js';
 import { getDefaultSkills } from './services/skill-registry.js';
 import { createSkillDir, cleanupSkillDir, cleanupAllSkillDirs } from './services/skill-injector.js';
 import { getServerInstanceId } from './services/instance-id.js';
+import { getDataPath } from './services/data-root.js';
 
 export const PORT = parseInt(process.env.PORT || '3010', 10);
 const SERVER_INSTANCE_ID = getServerInstanceId();
@@ -42,7 +43,19 @@ export interface PtySession {
   compactionCount: number;
 }
 
-export const MAX_SCROLLBACK = 100 * 1024; // 100KB per session
+export const MAX_SCROLLBACK = 300 * 1024; // 300KB per session
+
+export function trimTerminalScrollback(scrollback: string, limit = MAX_SCROLLBACK): string {
+  if (scrollback.length <= limit) return scrollback;
+
+  let start = scrollback.length - limit;
+  const nextLineBreak = scrollback.slice(start).search(/[\r\n]/);
+  if (nextLineBreak >= 0 && nextLineBreak < 2048) {
+    start += nextLineBreak + 1;
+  }
+
+  return scrollback.slice(start);
+}
 
 export const sessions = new Map<string, PtySession>();
 
@@ -119,7 +132,7 @@ function getCodexModelForRole(swarmRole: SwarmRole): string {
   const lead = process.env.SWARM_CODEX_MODEL_LEAD?.trim();
   const worker = process.env.SWARM_CODEX_MODEL_WORKER?.trim();
   if (swarmRole === 'lead') return lead || universal || 'gpt-5.4';
-  return worker || universal || 'gpt-5.3-codex';
+  return worker || universal || 'gpt-5.4';
 }
 
 function getCodexReasoningEffort(): string {
@@ -318,7 +331,7 @@ function getDockerCliCommand(
 }
 
 // Base directory for persistent Docker volumes
-const DOCKER_DATA_DIR = path.join(process.cwd(), 'data', 'docker');
+const DOCKER_DATA_DIR = getDataPath('docker');
 
 function seedCredentials(configDir: string): void {
   const claudeDir = path.join(configDir, 'claude');

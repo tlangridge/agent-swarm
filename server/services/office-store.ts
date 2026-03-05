@@ -1,13 +1,12 @@
 import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import type { CliType, ExecutionMode, PermissionMode } from '../pty-manager.js';
 import type { FunctionalRole } from './swarm-registry.js';
+import { getDataPath } from './data-root.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OFFICES_DIR = path.join(__dirname, '../../data/offices');
-const LEGACY_DIR = path.join(__dirname, '../../data/rosters');
+const OFFICES_DIR = getDataPath('offices');
+const LEGACY_DIR = getDataPath('rosters');
 
 export interface PipelineStage {
   name: string;
@@ -108,27 +107,26 @@ export async function getOffice(id: string): Promise<Office | null> {
 }
 
 // Per-office write mutex — serializes concurrent saves to the same office file
-const writeLocks = new Map<string, Promise<void>>();
+const writeLocks = new Map<string, Promise<unknown>>();
 
 export async function saveOffice(office: Office): Promise<void> {
   const id = office.id;
   const prev = writeLocks.get(id) ?? Promise.resolve();
-  let resolve!: () => void;
-  let reject!: (err: unknown) => void;
-  const gate = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
-  writeLocks.set(id, gate);
-
-  await prev;
-  try {
+  const next = prev.catch(() => undefined).then(async () => {
     await ensureDir();
     const filePath = path.join(OFFICES_DIR, `${id}.json`);
     const tmpPath = filePath + `.${randomUUID()}.tmp`;
     await fs.writeFile(tmpPath, JSON.stringify(office, null, 2));
     await fs.rename(tmpPath, filePath);
-    resolve();
-  } catch (err) {
-    reject(err);
-    throw err;
+  });
+  writeLocks.set(id, next);
+
+  try {
+    await next;
+  } finally {
+    if (writeLocks.get(id) === next) {
+      writeLocks.delete(id);
+    }
   }
 }
 

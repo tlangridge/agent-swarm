@@ -16,7 +16,7 @@ import { sessionRoutes } from './routes/sessions.js';
 import { keyRoutes } from './routes/keys.js';
 import { killAll, validateCliTools } from './pty-manager.js';
 import { detectDocker, isDockerAvailable, isImageBuilt, buildImage } from './docker-builder.js';
-import { persistStateNow } from './services/session-persistence.js';
+import { persistStateNow, getSavedSessionIds } from './services/session-persistence.js';
 import { migrateFromRosters } from './services/office-store.js';
 import { initNotificationManager, getNotifications } from './services/notification-manager.js';
 import { rehydrateCheckoutLocks } from './services/task-board.js';
@@ -181,7 +181,7 @@ server.listen(PORT, async () => {
 
   ensureKeyDirs();
   await migrateFromRosters();
-  await rehydrateCheckoutLocks();
+  await rehydrateCheckoutLocks(new Set(getSavedSessionIds()));
   cleanupOrphanedSkillDirs();
   console.log(`Agent Swarm server on http://localhost:${PORT}`);
   console.log(`WebSocket on ws://localhost:${PORT}/ws`);
@@ -191,7 +191,11 @@ server.listen(PORT, async () => {
   activateSessionStreaming();
 });
 
+let shuttingDown = false;
+
 function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log('\nShutting down...');
   try {
     persistStateNow();
@@ -200,10 +204,13 @@ function shutdown() {
     console.error(`Failed to persist session state on shutdown: ${message}`);
   }
   killAll();
-  server.close();
-  // Force exit after 1s in case PTY cleanup hangs
-  setTimeout(() => process.exit(0), 1000).unref();
-  process.exit(0);
+  const forceExit = setTimeout(() => process.exit(0), 1000);
+  forceExit.unref();
+  wss.close();
+  server.close(() => {
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
 }
 
 process.on('SIGTERM', shutdown);

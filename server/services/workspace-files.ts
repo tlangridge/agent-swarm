@@ -1,9 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { getDataPath } from './data-root.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BASE_DIR = path.join(__dirname, '../../data/workspace');
+const BASE_DIR = getDataPath('workspace');
 
 export interface WorkspaceFileEntry {
   path: string;
@@ -21,6 +20,7 @@ export interface WorkspaceIndex {
 }
 
 const ALLOWED_EXTENSIONS = new Set(['.md', '.txt', '.json', '.log']);
+const officeWriteLocks = new Map<string, Promise<unknown>>();
 
 /**
  * Sanitize and validate a workspace file path.
@@ -73,6 +73,20 @@ async function saveIndex(officeId: string, index: WorkspaceIndex): Promise<void>
   await fs.writeFile(indexPath(officeId), JSON.stringify(index, null, 2));
 }
 
+async function withOfficeWriteLock<T>(officeId: string, operation: () => Promise<T>): Promise<T> {
+  const prev = officeWriteLocks.get(officeId) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(operation);
+  officeWriteLocks.set(officeId, next);
+
+  try {
+    return await next;
+  } finally {
+    if (officeWriteLocks.get(officeId) === next) {
+      officeWriteLocks.delete(officeId);
+    }
+  }
+}
+
 /**
  * List all files in the workspace for a given office.
  * Creates an empty index if one doesn't exist yet.
@@ -119,43 +133,45 @@ export async function writeFile(
   const safe = sanitizePath(filePath);
   if (!safe) throw new Error(`Invalid file path: ${filePath}`);
 
-  await ensureDir(officeId);
+  return withOfficeWriteLock(officeId, async () => {
+    await ensureDir(officeId);
 
-  // Ensure subdirectories exist for nested paths
-  const fullPath = path.join(officeDir(officeId), safe);
-  await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    // Ensure subdirectories exist for nested paths
+    const fullPath = path.join(officeDir(officeId), safe);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
 
-  await fs.writeFile(fullPath, content, 'utf-8');
+    await fs.writeFile(fullPath, content, 'utf-8');
 
-  const now = new Date().toISOString();
-  const sizeBytes = Buffer.byteLength(content, 'utf-8');
+    const now = new Date().toISOString();
+    const sizeBytes = Buffer.byteLength(content, 'utf-8');
 
-  const index = await loadIndex(officeId);
-  const existing = index.files.find(f => f.path === safe);
+    const index = await loadIndex(officeId);
+    const existing = index.files.find(f => f.path === safe);
 
-  let entry: WorkspaceFileEntry;
+    let entry: WorkspaceFileEntry;
 
-  if (existing) {
-    existing.updatedBy = author;
-    existing.updatedAt = now;
-    existing.sizeBytes = sizeBytes;
-    if (description !== undefined) existing.description = description;
-    entry = existing;
-  } else {
-    entry = {
-      path: safe,
-      description,
-      createdBy: author,
-      updatedBy: author,
-      createdAt: now,
-      updatedAt: now,
-      sizeBytes,
-    };
-    index.files.push(entry);
-  }
+    if (existing) {
+      existing.updatedBy = author;
+      existing.updatedAt = now;
+      existing.sizeBytes = sizeBytes;
+      if (description !== undefined) existing.description = description;
+      entry = existing;
+    } else {
+      entry = {
+        path: safe,
+        description,
+        createdBy: author,
+        updatedBy: author,
+        createdAt: now,
+        updatedAt: now,
+        sizeBytes,
+      };
+      index.files.push(entry);
+    }
 
-  await saveIndex(officeId, index);
-  return entry;
+    await saveIndex(officeId, index);
+    return entry;
+  });
 }
 
 /**
@@ -172,45 +188,47 @@ export async function appendFile(
   const safe = sanitizePath(filePath);
   if (!safe) throw new Error(`Invalid file path: ${filePath}`);
 
-  await ensureDir(officeId);
+  return withOfficeWriteLock(officeId, async () => {
+    await ensureDir(officeId);
 
-  const fullPath = path.join(officeDir(officeId), safe);
-  await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    const fullPath = path.join(officeDir(officeId), safe);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
 
-  let existing = '';
-  try { existing = await fs.readFile(fullPath, 'utf-8'); } catch { /* new file */ }
+    let existing = '';
+    try { existing = await fs.readFile(fullPath, 'utf-8'); } catch { /* new file */ }
 
-  const sep = separator || '\n\n';
-  const merged = existing ? existing + sep + content : content;
-  await fs.writeFile(fullPath, merged, 'utf-8');
+    const sep = separator || '\n\n';
+    const merged = existing ? existing + sep + content : content;
+    await fs.writeFile(fullPath, merged, 'utf-8');
 
-  const now = new Date().toISOString();
-  const sizeBytes = Buffer.byteLength(merged, 'utf-8');
+    const now = new Date().toISOString();
+    const sizeBytes = Buffer.byteLength(merged, 'utf-8');
 
-  const index = await loadIndex(officeId);
-  const existingEntry = index.files.find(f => f.path === safe);
+    const index = await loadIndex(officeId);
+    const existingEntry = index.files.find(f => f.path === safe);
 
-  let entry: WorkspaceFileEntry;
+    let entry: WorkspaceFileEntry;
 
-  if (existingEntry) {
-    existingEntry.updatedBy = author;
-    existingEntry.updatedAt = now;
-    existingEntry.sizeBytes = sizeBytes;
-    entry = existingEntry;
-  } else {
-    entry = {
-      path: safe,
-      createdBy: author,
-      updatedBy: author,
-      createdAt: now,
-      updatedAt: now,
-      sizeBytes,
-    };
-    index.files.push(entry);
-  }
+    if (existingEntry) {
+      existingEntry.updatedBy = author;
+      existingEntry.updatedAt = now;
+      existingEntry.sizeBytes = sizeBytes;
+      entry = existingEntry;
+    } else {
+      entry = {
+        path: safe,
+        createdBy: author,
+        updatedBy: author,
+        createdAt: now,
+        updatedAt: now,
+        sizeBytes,
+      };
+      index.files.push(entry);
+    }
 
-  await saveIndex(officeId, index);
-  return entry;
+    await saveIndex(officeId, index);
+    return entry;
+  });
 }
 
 /**
@@ -221,18 +239,20 @@ export async function deleteFile(officeId: string, filePath: string): Promise<bo
   const safe = sanitizePath(filePath);
   if (!safe) return false;
 
-  const index = await loadIndex(officeId);
-  const idx = index.files.findIndex(f => f.path === safe);
-  if (idx === -1) return false;
+  return withOfficeWriteLock(officeId, async () => {
+    const index = await loadIndex(officeId);
+    const idx = index.files.findIndex(f => f.path === safe);
+    if (idx === -1) return false;
 
-  index.files.splice(idx, 1);
-  await saveIndex(officeId, index);
+    index.files.splice(idx, 1);
+    await saveIndex(officeId, index);
 
-  try {
-    await fs.unlink(path.join(officeDir(officeId), safe));
-  } catch {
-    // File may already be gone from disk
-  }
+    try {
+      await fs.unlink(path.join(officeDir(officeId), safe));
+    } catch {
+      // File may already be gone from disk
+    }
 
-  return true;
+    return true;
+  });
 }

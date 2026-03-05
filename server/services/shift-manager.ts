@@ -30,12 +30,14 @@ export interface ShiftSlotState {
   name: string;
   functionalRole: FunctionalRole;
   status: ShiftSlotStatus;
+  cliType?: CliType;
   sessionId?: string;
   worktreeBranch?: string;
   worktreePath?: string;
   error?: string;
   retryCount?: number;
   pendingTimeouts?: ReturnType<typeof setTimeout>[];
+  startupOrientation?: string;
 }
 
 export interface ShiftState {
@@ -84,6 +86,87 @@ function emitShiftProgress(officeId: string, slotIndex: number, slotName: string
 
 function emitShiftStatus(shift: ShiftState): void {
   swarmEvents.emit('shift:status', { shift });
+}
+
+function shouldCombineStartupPrompt(cliType: CliType): boolean {
+  return cliType === 'codex';
+}
+
+function scheduleSlotMessage(slotState: ShiftSlotState, sessionId: string, message: string, delayMs: number): void {
+  if (!slotState.pendingTimeouts) slotState.pendingTimeouts = [];
+  slotState.pendingTimeouts.push(setTimeout(() => {
+    injectMessage(sessionId, message);
+  }, delayMs));
+}
+
+function buildLeadKickoffMessage(
+  office: Office,
+  shift: ShiftState,
+  projectPath: string | undefined,
+  lastClose: Awaited<ReturnType<typeof getLastCloseDocument>>,
+): string {
+  const teamList = shift.slots
+    .filter(s => s.status === 'active')
+    .map(s => `  - ${s.name} (${s.functionalRole})`)
+    .join('\n');
+
+  const kickoffParts: string[] = ['[SWARM SYSTEM]: Your shift has started.'];
+
+  kickoffParts.push(`\n=== OFFICE: ${office.name} ===`);
+  if (projectPath) {
+    kickoffParts.push(`Project: ${projectPath}`);
+  }
+  if (office.soul) {
+    kickoffParts.push(office.soul);
+  }
+  if (office.instructions) {
+    kickoffParts.push(office.instructions);
+  }
+
+  kickoffParts.push(`\nYour team:\n${teamList}`);
+
+  if (office.pipeline && office.pipeline.length > 0) {
+    const pipelineList = office.pipeline
+      .map((stage, i) => `  ${i + 1}. ${stage.name}: ${stage.description} [${stage.assignedRoles.join(', ')}]`)
+      .join('\n');
+    kickoffParts.push(`\nPipeline stages:\n${pipelineList}`);
+  }
+
+  if (lastClose) {
+    kickoffParts.push(
+      `\n=== PREVIOUS SHIFT (#${lastClose.shiftNumber}) CLOSE REPORT ===`,
+      lastClose.content,
+      '=== END PREVIOUS SHIFT REPORT ===',
+    );
+  }
+
+  kickoffParts.push(
+    '\nUse the `swarm` CLI for team coordination. Run `swarm help` for available commands.',
+    '\nStart by:',
+    '1. Read existing context: `swarm context`',
+    '2. Check current tasks: `swarm tasks`',
+    '3. If no tasks exist, wait for the user\'s mission, then break it into tasks and assign them.',
+    '4. Set up a PM check-in: `swarm cron create --name "PM Check-In" --schedule "every 10m" --target-role product-manager --prompt "Check task board with swarm tasks. Review progress, identify blocked tasks, and message the lead with a brief status update. Flag any stale or stuck agents."`',
+  );
+
+  return kickoffParts.join('\n');
+}
+
+function buildWorkerStandbyMessage(lastClose: Awaited<ReturnType<typeof getLastCloseDocument>>): string {
+  const standbyParts = [
+    '[SWARM SYSTEM]: Shift started. You are a worker agent.',
+    'STAND BY — do NOT start any work yet.',
+    'The lead is setting up the mission and will assign you tasks shortly.',
+    'While you wait:',
+    '  1. Run `swarm tasks --mine` to check for pre-assigned tasks',
+    '  2. Run `swarm context` to read the workspace context',
+    '  3. If you have no tasks, WAIT for a message from the lead.',
+    'Do NOT explore the codebase, write code, or take any action until you have a task.',
+  ];
+  if (lastClose) {
+    standbyParts.push(`Previous shift (#${lastClose.shiftNumber}) close report is available. Run: swarm read ${lastClose.path}`);
+  }
+  return standbyParts.join('\n');
 }
 
 async function generateCloseDocument(shift: ShiftState, office: Office): Promise<string> {
@@ -204,6 +287,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       slotIndex: i,
       name: slot.name,
       functionalRole: slot.functionalRole,
+      cliType: slot.cliType as CliType,
       status: 'pending' as ShiftSlotStatus,
     })),
   };
@@ -377,7 +461,11 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
           ? `http://host.docker.internal:${PORT}`
           : `http://localhost:${PORT}`;
         const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx);
-        slotState.pendingTimeouts.push(setTimeout(() => injectMessage(sessionId, orientation), 2000));
+        if (shouldCombineStartupPrompt(cliType)) {
+          slotState.startupOrientation = orientation;
+        } else {
+          scheduleSlotMessage(slotState, sessionId, orientation, 2000);
+        }
       }
 
       slotState.status = 'active';
@@ -425,85 +513,22 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
   // Send kickoff message to the lead agent
   const leadSlot = shift.slots[effectiveLeadIndex];
   if (leadSlot.sessionId && leadSlot.status === 'active') {
-    const teamList = shift.slots
-      .filter(s => s.status === 'active')
-      .map(s => `  - ${s.name} (${s.functionalRole})`)
-      .join('\n');
-
-    const kickoffParts: string[] = ['[SWARM SYSTEM]: Your shift has started.'];
-
-    // Office context
-    kickoffParts.push(`\n=== OFFICE: ${office.name} ===`);
-    if (projectPath) {
-      kickoffParts.push(`Project: ${projectPath}`);
-    }
-    if (office.soul) {
-      kickoffParts.push(office.soul);
-    }
-    if (office.instructions) {
-      kickoffParts.push(office.instructions);
-    }
-
-    // Team
-    kickoffParts.push(`\nYour team:\n${teamList}`);
-
-    // Pipeline
-    if (office.pipeline && office.pipeline.length > 0) {
-      const pipelineList = office.pipeline
-        .map((stage, i) => `  ${i + 1}. ${stage.name}: ${stage.description} [${stage.assignedRoles.join(', ')}]`)
-        .join('\n');
-      kickoffParts.push(`\nPipeline stages:\n${pipelineList}`);
-    }
-
-    // Previous shift close report
-    if (lastClose) {
-      kickoffParts.push(
-        `\n=== PREVIOUS SHIFT (#${lastClose.shiftNumber}) CLOSE REPORT ===`,
-        lastClose.content,
-        '=== END PREVIOUS SHIFT REPORT ===',
-      );
-    }
-
-    // Instructions
-    kickoffParts.push(
-      '\nUse the `swarm` CLI for team coordination. Run `swarm help` for available commands.',
-      '\nStart by:',
-      '1. Read existing context: `swarm context`',
-      '2. Check current tasks: `swarm tasks`',
-      '3. If no tasks exist, wait for the user\'s mission, then break it into tasks and assign them.',
-      '4. Set up a PM check-in: `swarm cron create --name "PM Check-In" --schedule "every 10m" --target-role product-manager --prompt "Check task board with swarm tasks. Review progress, identify blocked tasks, and message the lead with a brief status update. Flag any stale or stuck agents."`',
-    );
-
-    const kickoff = kickoffParts.join('\n');
-    if (!leadSlot.pendingTimeouts) leadSlot.pendingTimeouts = [];
-    leadSlot.pendingTimeouts.push(setTimeout(() => injectMessage(leadSlot.sessionId!, kickoff), 3000));
+    const kickoff = buildLeadKickoffMessage(office, shift, projectPath, lastClose);
+    const startupMessage = leadSlot.startupOrientation
+      ? `${leadSlot.startupOrientation}\n\n${kickoff}`
+      : kickoff;
+    scheduleSlotMessage(leadSlot, leadSlot.sessionId, startupMessage, leadSlot.startupOrientation ? 2000 : 3000);
   }
 
   // Send "stand by" message to ALL worker agents so they don't start working prematurely
   const workerSlots = shift.slots.filter((s, i) => s.status === 'active' && s.sessionId && i !== effectiveLeadIndex);
   if (workerSlots.length > 0) {
-    const standbyParts = [
-      '[SWARM SYSTEM]: Shift started. You are a worker agent.',
-      'STAND BY — do NOT start any work yet.',
-      'The lead is setting up the mission and will assign you tasks shortly.',
-      'While you wait:',
-      '  1. Run `swarm tasks --mine` to check for pre-assigned tasks',
-      '  2. Run `swarm context` to read the workspace context',
-      '  3. If you have no tasks, WAIT for a message from the lead.',
-      'Do NOT explore the codebase, write code, or take any action until you have a task.',
-    ];
-    if (lastClose) {
-      standbyParts.push(`Previous shift (#${lastClose.shiftNumber}) close report is available. Run: swarm read ${lastClose.path}`);
-    }
-    const standbyMsg = standbyParts.join('\n');
-    const standbyTimer = setTimeout(() => {
-      for (const slot of workerSlots) {
-        injectMessage(slot.sessionId!, standbyMsg);
-      }
-    }, 4000);
+    const standbyMsg = buildWorkerStandbyMessage(lastClose);
     for (const slot of workerSlots) {
-      if (!slot.pendingTimeouts) slot.pendingTimeouts = [];
-      slot.pendingTimeouts.push(standbyTimer);
+      const startupMessage = slot.startupOrientation
+        ? `${slot.startupOrientation}\n\n${standbyMsg}`
+        : standbyMsg;
+      scheduleSlotMessage(slot, slot.sessionId!, startupMessage, slot.startupOrientation ? 2000 : 4000);
     }
   }
 

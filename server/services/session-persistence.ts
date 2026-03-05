@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
-import { spawnSession, sessions, MAX_SCROLLBACK } from '../pty-manager.js';
+import { spawnSession, sessions, trimTerminalScrollback } from '../pty-manager.js';
 import type { CliType, ExecutionMode, PermissionMode } from '../pty-manager.js';
 import { addMember, getMembers } from './swarm-registry.js';
 import type { SwarmRole, FunctionalRole } from './swarm-registry.js';
 import { setProjectPath, getProjectPath } from '../routes/project.js';
 import { injectMessage, registerSession } from './pty-writer.js';
+import { getDataPath } from './data-root.js';
+import { releaseCheckoutsForSessionIds } from './task-board.js';
 
 interface PersistedSession {
   id: string;
@@ -34,7 +36,7 @@ interface PersistedState {
   sessions: PersistedSession[];
 }
 
-const STATE_DIR = path.join(process.cwd(), 'data');
+const STATE_DIR = getDataPath();
 const STATE_FILE = path.join(STATE_DIR, 'session-state.json');
 const MEMORY_ROOT = process.env.AGENT_SWARM_MEMORY_DIR
   || path.join(process.env.HOME || process.cwd(), '.agent-swarm', 'memory');
@@ -161,7 +163,7 @@ function serializeState(): PersistedState {
       permissionMode: session.permissionMode,
       cols: session.cols,
       rows: session.rows,
-      scrollback: session.scrollback.slice(-MAX_SCROLLBACK),
+      scrollback: trimTerminalScrollback(session.scrollback),
       createdAt: session.createdAt.toISOString(),
       swarmRole: member?.role ?? 'worker',
       functionalRole: member?.functionalRole ?? null,
@@ -313,6 +315,13 @@ export function getSavedSessionSummaries(): SavedStateInfo | null {
   };
 }
 
+export function getSavedSessionIds(): string[] {
+  if (!existsSync(STATE_FILE)) return [];
+  const parsed = parseState(readFileSync(STATE_FILE, 'utf-8'));
+  if (!parsed) return [];
+  return parsed.sessions.map(session => session.id);
+}
+
 export function clearSavedState(): void {
   if (existsSync(STATE_FILE)) {
     const emptyState: PersistedState = {
@@ -325,15 +334,21 @@ export function clearSavedState(): void {
   }
 }
 
-export function restorePersistedState(filterSessionIds?: string[]): { restored: number; failed: number } {
+export async function discardSavedState(): Promise<void> {
+  const savedSessionIds = getSavedSessionIds();
+  await releaseCheckoutsForSessionIds(savedSessionIds);
+  clearSavedState();
+}
+
+export async function restorePersistedState(filterSessionIds?: string[]): Promise<{ restored: number; failed: number; releasedLocks: number }> {
   if (!existsSync(STATE_FILE)) {
-    return { restored: 0, failed: 0 };
+    return { restored: 0, failed: 0, releasedLocks: 0 };
   }
 
   const parsed = parseState(readFileSync(STATE_FILE, 'utf-8'));
   if (!parsed) {
     console.warn('Session state file is invalid; skipping restore.');
-    return { restored: 0, failed: 0 };
+    return { restored: 0, failed: 0, releasedLocks: 0 };
   }
 
   setProjectPath(parsed.projectPath);
@@ -344,7 +359,8 @@ export function restorePersistedState(filterSessionIds?: string[]): { restored: 
 
   let restored = 0;
   let failed = 0;
-  let hasLead = false;
+  const restoredIds = new Set<string>();
+  const leadOffices = new Set<string>();
 
   for (const snapshot of sessionsToRestore) {
     if (sessions.has(snapshot.id)) continue;
@@ -356,8 +372,9 @@ export function restorePersistedState(filterSessionIds?: string[]): { restored: 
       } : null;
       const cols = Number.isFinite(snapshot.cols) ? Math.max(20, snapshot.cols) : 80;
       const rows = Number.isFinite(snapshot.rows) ? Math.max(10, snapshot.rows) : 24;
-      const role: SwarmRole = snapshot.swarmRole === 'lead' && !hasLead ? 'lead' : 'worker';
-      if (role === 'lead') hasLead = true;
+      const officeKey = snapshot.officeId ?? '';
+      const role: SwarmRole = snapshot.swarmRole === 'lead' && !leadOffices.has(officeKey) ? 'lead' : 'worker';
+      if (role === 'lead') leadOffices.add(officeKey);
 
       const session = spawnSession(
         snapshot.id,
@@ -376,7 +393,7 @@ export function restorePersistedState(filterSessionIds?: string[]): { restored: 
         snapshot.officeId,
       );
 
-      session.scrollback = (snapshot.scrollback || '').slice(-MAX_SCROLLBACK);
+      session.scrollback = trimTerminalScrollback(snapshot.scrollback || '');
       const restoredCreatedAt = new Date(snapshot.createdAt);
       if (!Number.isNaN(restoredCreatedAt.valueOf())) {
         session.createdAt = restoredCreatedAt;
@@ -405,6 +422,7 @@ export function restorePersistedState(filterSessionIds?: string[]): { restored: 
       }
 
       restored++;
+      restoredIds.add(snapshot.id);
     } catch (err: unknown) {
       failed++;
       const message = err instanceof Error ? err.message : 'unknown error';
@@ -412,6 +430,11 @@ export function restorePersistedState(filterSessionIds?: string[]): { restored: 
     }
   }
 
+  const unrecoveredSessionIds = parsed.sessions
+    .map(snapshot => snapshot.id)
+    .filter(id => !restoredIds.has(id) && !sessions.has(id));
+  const releasedTaskIds = await releaseCheckoutsForSessionIds(unrecoveredSessionIds);
+
   schedulePersistState();
-  return { restored, failed };
+  return { restored, failed, releasedLocks: releasedTaskIds.length };
 }

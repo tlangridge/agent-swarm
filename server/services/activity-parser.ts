@@ -76,10 +76,17 @@ export function extractRecentFiles(scrollback: string, maxFiles = 5): string[] {
 
 export async function getStructuredStatus(scopeOfficeId?: string): Promise<AgentStructuredStatus[]> {
   const members = scopeOfficeId ? getMembersByOffice(scopeOfficeId) : getMembers();
-  const officeId = scopeOfficeId || getActiveShift()?.officeId;
-  const shift = officeId ? getActiveShift(officeId) : getActiveShift();
-  const allTasks = await listTasks(officeId ? { officeId } : undefined);
+  const allTasks = await listTasks(scopeOfficeId ? { officeId: scopeOfficeId } : undefined);
   const result: AgentStructuredStatus[] = [];
+  const shiftsByOffice = new Map<string, ReturnType<typeof getActiveShift>>();
+
+  const getShiftForOffice = (officeId: string | undefined) => {
+    if (!officeId) return null;
+    if (!shiftsByOffice.has(officeId)) {
+      shiftsByOffice.set(officeId, getActiveShift(officeId));
+    }
+    return shiftsByOffice.get(officeId) ?? null;
+  };
 
   for (const member of members) {
     const session = sessions.get(member.sessionId);
@@ -109,7 +116,7 @@ export async function getStructuredStatus(scopeOfficeId?: string): Promise<Agent
       : undefined;
 
     // Find worktree branch from shift slot state
-    const slotState = shift?.slots.find(s => s.sessionId === member.sessionId);
+    const slotState = getShiftForOffice(member.officeId)?.slots.find(s => s.sessionId === member.sessionId);
 
     // Cost tracking data
     const costRecord = getCostRecord(member.sessionId);

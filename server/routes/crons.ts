@@ -1,8 +1,8 @@
 import { Router, type Request } from 'express';
 import { nanoid } from 'nanoid';
-import { getMember, getMembers } from '../services/swarm-registry.js';
+import { getMember, getMembersByOffice } from '../services/swarm-registry.js';
 import type { FunctionalRole } from '../services/swarm-registry.js';
-import { getActiveShift, getShiftBySessionId } from '../services/shift-manager.js';
+import { getShiftBySessionId } from '../services/shift-manager.js';
 import { getOffice, saveOffice } from '../services/office-store.js';
 import type { CronJob } from '../services/office-store.js';
 import { reloadScheduler, getSchedulerStatusWithOffice } from '../services/cron-scheduler.js';
@@ -13,8 +13,8 @@ export const cronRoutes = Router();
 /**
  * Resolve target session IDs for a cron job based on its targeting config.
  */
-function resolveTargets(job: CronJob): string[] {
-  const members = getMembers();
+function resolveTargets(job: CronJob, officeId: string): string[] {
+  const members = getMembersByOffice(officeId);
   const sessionIds: string[] = [];
 
   if (job.targetAgent) {
@@ -41,7 +41,7 @@ function resolveTargets(job: CronJob): string[] {
 }
 
 /**
- * Resolve office from query param, sender header, or active shift.
+ * Resolve office from query param or sender session.
  */
 async function getActiveOffice(req: Request) {
   const qId = req.query.officeId as string | undefined;
@@ -53,8 +53,7 @@ async function getActiveOffice(req: Request) {
     const shift = getShiftBySessionId(sessionId);
     if (shift) return getOffice(shift.officeId);
   }
-  const shift = getActiveShift();
-  return shift ? getOffice(shift.officeId) : null;
+  return null;
 }
 
 /**

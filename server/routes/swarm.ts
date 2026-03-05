@@ -109,6 +109,9 @@ swarmRoutes.get('/dashboard', async (req, res) => {
   const sessionId = req.headers['x-session-id'] as string | undefined;
   const member = sessionId ? getMember(sessionId) : undefined;
   const officeId = (req.query.officeId as string | undefined) || member?.officeId;
+  if (!officeId) {
+    return res.json({ agents: [], generatedAt: new Date().toISOString() });
+  }
 
   const agents = await getStructuredStatus(officeId);
   res.json({ agents, generatedAt: new Date().toISOString() });

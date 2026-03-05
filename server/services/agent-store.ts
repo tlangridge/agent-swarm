@@ -1,9 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { getDataPath } from './data-root.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AGENTS_DIR = path.join(__dirname, '../../data/agents');
+const AGENTS_DIR = getDataPath('agents');
 
 export interface AgentIdentity {
   id: string;

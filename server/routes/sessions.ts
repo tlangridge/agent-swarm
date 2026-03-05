@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getSavedSessionSummaries, restorePersistedState, clearSavedState } from '../services/session-persistence.js';
+import { getSavedSessionSummaries, restorePersistedState, discardSavedState } from '../services/session-persistence.js';
 import { activateSessionStreaming } from '../ws-handler.js';
 import { sessions } from '../pty-manager.js';
 
@@ -24,13 +24,13 @@ sessionRoutes.get('/saved', (_req, res) => {
 });
 
 // POST /api/sessions/restore — restore selected sessions by ID
-sessionRoutes.post('/restore', (req, res) => {
+sessionRoutes.post('/restore', async (req, res) => {
   const { sessionIds } = req.body;
   if (!Array.isArray(sessionIds)) {
     return res.status(400).json({ error: 'sessionIds must be an array' });
   }
 
-  const result = restorePersistedState(
+  const result = await restorePersistedState(
     sessionIds.length > 0 ? sessionIds : undefined,
   );
   activateSessionStreaming();
@@ -38,11 +38,12 @@ sessionRoutes.post('/restore', (req, res) => {
   res.json({
     restored: result.restored,
     failed: result.failed,
+    releasedLocks: result.releasedLocks,
   });
 });
 
 // POST /api/sessions/discard — discard all saved sessions (start fresh)
-sessionRoutes.post('/discard', (_req, res) => {
-  clearSavedState();
+sessionRoutes.post('/discard', async (_req, res) => {
+  await discardSavedState();
   res.json({ discarded: true });
 });

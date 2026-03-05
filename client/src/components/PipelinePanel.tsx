@@ -4,6 +4,7 @@ import type { TaskItem, PipelineStage, FunctionalRole } from '../types';
 interface Props {
   tasks: TaskItem[];
   stages: PipelineStage[];
+  officeId?: string | null;
   onMoveTask?: (taskId: string, updates: { stage?: string; status?: string }) => Promise<void>;
 }
 
@@ -54,7 +55,7 @@ function sortByPriority(tasks: TaskItem[]): TaskItem[] {
   });
 }
 
-export default function PipelinePanel({ tasks, stages, onMoveTask }: Props) {
+export default function PipelinePanel({ tasks, stages, officeId, onMoveTask }: Props) {
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [hideDone, setHideDone] = useState(true);
 
@@ -150,7 +151,8 @@ export default function PipelinePanel({ tasks, stages, onMoveTask }: Props) {
                               className="pipeline-release-btn"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                fetch(`/api/swarm/tasks/${task.id}/release`, {
+                                const query = officeId ? `?officeId=${encodeURIComponent(officeId)}` : '';
+                                fetch(`/api/swarm/tasks/${task.id}/release${query}`, {
                                   method: 'POST',
                                   headers: { 'X-Dashboard': 'true' },
                                 });

@@ -31,12 +31,55 @@ function stripAnsi(input: string): string {
   return input.replace(/\u001B\[[0-9;]*[A-Za-z]/g, '');
 }
 
-const TERMINAL_HISTORY_LIMIT = 200 * 1024; // 200KB per session
+const TERMINAL_HISTORY_LIMIT = 300 * 1024; // 300KB per session
 
-function appendTerminalHistory(current: string, chunk: string): string {
-  const merged = current + chunk;
-  if (merged.length <= TERMINAL_HISTORY_LIMIT) return merged;
-  return merged.slice(-TERMINAL_HISTORY_LIMIT);
+interface TerminalHistoryEntry {
+  chunks: string[];
+  totalLength: number;
+}
+
+function trimTerminalHistoryChunk(chunk: string, limit: number): string {
+  if (chunk.length <= limit) return chunk;
+
+  let start = chunk.length - limit;
+  const nextLineBreak = chunk.slice(start).search(/[\r\n]/);
+  if (nextLineBreak >= 0 && nextLineBreak < 2048) {
+    start += nextLineBreak + 1;
+  }
+
+  return chunk.slice(start);
+}
+
+function appendTerminalHistory(current: TerminalHistoryEntry | undefined, chunk: string): TerminalHistoryEntry {
+  const next: TerminalHistoryEntry = current
+    ? { chunks: [...current.chunks, chunk], totalLength: current.totalLength + chunk.length }
+    : { chunks: [chunk], totalLength: chunk.length };
+
+  while (next.chunks.length > 1 && next.totalLength > TERMINAL_HISTORY_LIMIT) {
+    const removed = next.chunks.shift();
+    if (!removed) break;
+    next.totalLength -= removed.length;
+  }
+
+  if (next.totalLength > TERMINAL_HISTORY_LIMIT && next.chunks.length === 1) {
+    next.chunks[0] = trimTerminalHistoryChunk(next.chunks[0], TERMINAL_HISTORY_LIMIT);
+    next.totalLength = next.chunks[0].length;
+  }
+
+  return next;
+}
+
+function hydrateTerminalHistory(scrollback: string): TerminalHistoryEntry {
+  const trimmed = trimTerminalHistoryChunk(scrollback, TERMINAL_HISTORY_LIMIT);
+  return {
+    chunks: trimmed ? [trimmed] : [],
+    totalLength: trimmed.length,
+  };
+}
+
+function readTerminalHistory(entry: TerminalHistoryEntry | undefined): string {
+  if (!entry || entry.chunks.length === 0) return '';
+  return entry.chunks.join('');
 }
 
 export default function App() {
@@ -58,7 +101,7 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const writersRef = useRef<Map<string, (data: string) => void>>(new Map());
   const pendingCreatesRef = useRef<Map<string, { agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string }>>(new Map());
-  const terminalHistoryRef = useRef<Map<string, string>>(new Map());
+  const terminalHistoryRef = useRef<Map<string, TerminalHistoryEntry>>(new Map());
 
   const [sidebarTab, setSidebarTab] = useState<'worktrees' | 'pipeline' | 'workflow' | 'config'>('worktrees');
   const [view, setView] = useState<'workspace' | 'agents'>('workspace');
@@ -343,7 +386,7 @@ export default function App() {
                 writersRef.current.delete(msg.sessionId);
               }
             }
-            const existingHistory = terminalHistoryRef.current.get(msg.sessionId) || '';
+            const existingHistory = terminalHistoryRef.current.get(msg.sessionId);
             terminalHistoryRef.current.set(msg.sessionId, appendTerminalHistory(existingHistory, msg.data));
 
             // Update output preview buffer (ref only — synced to state every 500ms)
@@ -442,9 +485,9 @@ export default function App() {
             });
             // Keep per-session terminal history so remounts can fully rehydrate.
             if (msg.scrollback) {
-              const existingHistory = terminalHistoryRef.current.get(msg.sessionId) || '';
-              if (msg.scrollback.length >= existingHistory.length) {
-                terminalHistoryRef.current.set(msg.sessionId, msg.scrollback);
+              const existingHistory = terminalHistoryRef.current.get(msg.sessionId);
+              if (!existingHistory || msg.scrollback.length >= existingHistory.totalLength) {
+                terminalHistoryRef.current.set(msg.sessionId, hydrateTerminalHistory(msg.scrollback));
               }
             }
             // Seed output preview from scrollback
@@ -656,7 +699,7 @@ export default function App() {
     });
 
     // If a worktree is selected, send its path as the projectPath override
-    const effectivePath = worktree?.path || projectPath || undefined;
+    const effectivePath = worktree?.path || effectiveProjectPath || undefined;
 
     sendWs({
       type: 'create',
@@ -672,7 +715,7 @@ export default function App() {
       cols: 80,
       rows: 24,
     });
-  }, [sendWs, projectPath]);
+  }, [effectiveProjectPath, sendWs]);
 
   const handleRestartTerminal = useCallback((sessionId: string) => {
     const session = sessions.get(sessionId);
@@ -698,9 +741,9 @@ export default function App() {
       agentEmail: session.agentEmail ?? undefined, cliType: session.cliType,
       executionMode: session.executionMode, permissionMode: 'autonomous',
       swarmRole: session.swarmRole, functionalRole: session.functionalRole,
-      projectPath: projectPath || undefined, cols: 80, rows: 24,
+      projectPath: effectiveProjectPath || undefined, cols: 80, rows: 24,
     });
-  }, [sessions, sendWs, projectPath]);
+  }, [effectiveProjectPath, sessions, sendWs]);
 
   const handleCloseTerminal = useCallback((sessionId: string) => {
     sendWs({ type: 'kill', sessionId });
@@ -726,7 +769,7 @@ export default function App() {
 
   const handleTerminalReady = useCallback((sessionId: string, write: (data: string) => void) => {
     writersRef.current.set(sessionId, write);
-    const history = terminalHistoryRef.current.get(sessionId);
+    const history = readTerminalHistory(terminalHistoryRef.current.get(sessionId));
     if (history) write(history);
   }, []);
 
@@ -849,6 +892,7 @@ export default function App() {
         }
       >
         <TerminalWindow
+          key={id}
           sessionId={id}
           onInput={handleInput}
           onResize={handleResize}
@@ -1092,6 +1136,7 @@ export default function App() {
                     })()}
                   </div>
                   <TerminalWindow
+                    key={focusedSessionId}
                     sessionId={focusedSessionId}
                     onInput={handleInput}
                     onResize={handleResize}
@@ -1162,6 +1207,7 @@ export default function App() {
                 swarmMembers={swarmMembers}
                 leadSessionId={leadSessionId}
                 activeShift={activeShift}
+                officeId={focusedOfficeId}
                 tasks={tasks}
                 outputPreviews={outputPreviews}
                 lastActivityAt={lastActivityAt}
@@ -1231,6 +1277,7 @@ export default function App() {
                     <PipelinePanel
                       tasks={tasks}
                       stages={selectedOffice?.pipeline || []}
+                      officeId={selectedOfficeId}
                       onMoveTask={moveTask}
                     />
                   ) : sidebarTab === 'workflow' ? (
@@ -1269,7 +1316,7 @@ export default function App() {
           leadSessionId={leadSessionId}
           worktrees={worktrees}
           isGitRepo={isGitRepo}
-          projectPath={projectPath}
+          projectPath={effectiveProjectPath}
           onSelect={handleAddTerminal}
           onCreateAgent={createAgent}
           onCreateWorktree={createWorktree}

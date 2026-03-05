@@ -1,7 +1,7 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { getMember, getMemberByName, getLeadSessionId, recordTaskSuccess, recordTaskFailure, canAcceptTask } from '../services/swarm-registry.js';
 import { listTasks, getTask, createTask, updateTask, deleteTask, areDependenciesMet, getReadyTasks, addVerificationRun, checkoutTask, releaseCheckout, getCheckoutLock, getAllCheckoutLocks, isLockStale } from '../services/task-board.js';
-import type { CompletionReport, CheckoutLock } from '../services/task-board.js';
+import type { CompletionReport, TaskItem } from '../services/task-board.js';
 import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand } from '../services/shift-manager.js';
 import { injectMessage } from '../services/pty-writer.js';
 import { sessions } from '../pty-manager.js';
@@ -22,13 +22,28 @@ function annotateCheckoutLiveness(tasks: import('../services/task-board.js').Tas
   });
 }
 
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : Array.isArray(v) ? String(v[0]) : undefined;
+}
+
+function resolveOfficeId(req: Request): string | undefined {
+  const queryOfficeId = str(req.query.officeId);
+  if (queryOfficeId) return queryOfficeId;
+
+  const sessionId = req.headers['x-session-id'] as string | undefined;
+  if (!sessionId) return undefined;
+  return getMember(sessionId)?.officeId;
+}
+
+function taskMatchesOffice(task: TaskItem, officeId?: string): boolean {
+  if (!officeId) return true;
+  return task.officeId === officeId;
+}
+
 // GET /api/swarm/tasks — List tasks (filterable by ?stage=&assignedTo=&status=&priority=)
 // No auth required for listing — the UI dashboard polls this endpoint
 // Special value: assignedTo=_self resolves to the requesting agent's name
 taskRoutes.get('/', async (req, res) => {
-  const str = (v: unknown): string | undefined =>
-    typeof v === 'string' ? v : Array.isArray(v) ? String(v[0]) : undefined;
-
   let assignedTo = str(req.query.assignedTo);
   // Resolve _self to the requesting agent's name
   if (assignedTo === '_self') {
@@ -36,8 +51,11 @@ taskRoutes.get('/', async (req, res) => {
     const member = sessionId ? getMember(sessionId) : undefined;
     assignedTo = member?.agentName || undefined;
   }
-  const senderSessionIdForOffice = req.headers['x-session-id'] as string | undefined;
-  const officeId = str(req.query.officeId) || (senderSessionIdForOffice ? getMember(senderSessionIdForOffice)?.officeId : undefined) || getActiveShift()?.officeId;
+  const officeId = resolveOfficeId(req);
+  if (!officeId) {
+    return res.json({ tasks: [] });
+  }
+
   const filters = {
     stage: str(req.query.stage),
     assignedTo,
@@ -75,6 +93,9 @@ taskRoutes.post('/', async (req, res) => {
       const dep = await getTask(depId);
       if (!dep) {
         return res.status(400).json({ error: `Dependency task '${depId}' not found` });
+      }
+      if (dep.officeId !== sender.officeId) {
+        return res.status(400).json({ error: `Dependency task '${depId}' belongs to a different office` });
       }
     }
   }
@@ -123,6 +144,16 @@ taskRoutes.put('/:id', async (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
+  const officeId = resolveOfficeId(req);
+  if (isDashboard && !officeId) {
+    return res.status(400).json({ error: 'Missing office context' });
+  }
+
+  const existingTask = await getTask(req.params.id);
+  if (!existingTask || !taskMatchesOffice(existingTask, officeId)) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
   // Guard: don't allow reassignment of locked tasks (unless dashboard)
   const { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl } = req.body;
   if (assignedTo !== undefined) {
@@ -135,15 +166,29 @@ taskRoutes.put('/:id', async (req, res) => {
       });
     }
   }
+
+  if (Array.isArray(dependsOn)) {
+    for (const depId of dependsOn) {
+      const dep = await getTask(depId);
+      if (!dep) {
+        return res.status(400).json({ error: `Dependency task '${depId}' not found` });
+      }
+      if (dep.officeId !== existingTask.officeId) {
+        return res.status(400).json({ error: `Dependency task '${depId}' belongs to a different office` });
+      }
+    }
+  }
+
   const task = await updateTask(req.params.id, { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl });
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   // Auto-spawn pending slot if newly assigned
   if (assignedTo) {
-    const updateSenderSessionId = senderSessionId;
-    const updateShift = updateSenderSessionId
-      ? (getShiftBySessionId(updateSenderSessionId) ?? getActiveShift(getMember(updateSenderSessionId)?.officeId))
-      : getActiveShift();
+    const updateShift = task.officeId
+      ? getActiveShift(task.officeId)
+      : (senderSessionId
+        ? (getShiftBySessionId(senderSessionId) ?? getActiveShift(getMember(senderSessionId)?.officeId))
+        : null);
     if (updateShift) {
       const pendingSlot = updateShift.slots.find(
         s => s.name.toLowerCase() === assignedTo.toLowerCase() && s.status === 'pending',
@@ -172,6 +217,10 @@ taskRoutes.post('/:id/pick', async (req, res) => {
   }
 
   const sender = getMember(senderSessionId)!;
+  const existingTask = await getTask(req.params.id);
+  if (!existingTask || existingTask.officeId !== sender.officeId) {
+    return res.status(404).json({ error: 'Task not found or not available for pickup' });
+  }
   const result = await checkoutTask(
     req.params.id, senderSessionId, sender.agentName || 'Anonymous',
   );
@@ -220,6 +269,10 @@ taskRoutes.post('/:id/done', async (req, res) => {
   }
 
   const sender = getMember(senderSessionId)!;
+  const existingTask = await getTask(req.params.id);
+  if (!existingTask || existingTask.officeId !== sender.officeId) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
   const updates: { status: 'done'; output?: string; completionReport?: CompletionReport } = { status: 'done' };
   if (req.body?.output) updates.output = req.body.output;
 
@@ -244,8 +297,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   }
 
   // Carry over existing verification runs
-  const existingTask = await getTask(req.params.id);
-  if (existingTask?.completionReport?.verificationRuns) {
+  if (existingTask.completionReport?.verificationRuns) {
     report.verificationRuns = existingTask.completionReport.verificationRuns;
   }
 
@@ -259,7 +311,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   recordTaskSuccess(senderSessionId);
 
   // Notify lead with structured completion summary
-  const leadSessionId = getLeadSessionId(sender.officeId || undefined);
+  const leadSessionId = getLeadSessionId(task.officeId || sender.officeId || undefined);
   if (leadSessionId && leadSessionId !== senderSessionId) {
     const lines: string[] = [`[TASK COMPLETED]: "${task.title}" by ${sender.agentName}`];
     if (report.branch) lines.push(`  Branch: ${report.branch}`);
@@ -289,7 +341,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   if (nowReady.length > 0) {
     for (const ready of nowReady) {
       if (ready.assignedTo) {
-        const target = getMemberByName(ready.assignedTo, sender.officeId || undefined);
+        const target = getMemberByName(ready.assignedTo, task.officeId || undefined);
         if (target) {
           injectMessage(target.sessionId, `[SWARM SYSTEM]: Task "${ready.title}" (${ready.id}) is now unblocked — all dependencies are complete.`);
         }
@@ -312,6 +364,11 @@ taskRoutes.post('/:id/fail', async (req, res) => {
   }
 
   const reason = req.body?.reason || 'No reason given';
+  const sender = getMember(senderSessionId)!;
+  const existingTask = await getTask(req.params.id);
+  if (!existingTask || existingTask.officeId !== sender.officeId) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
   const task = await updateTask(req.params.id, { status: 'blocked' });
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
@@ -321,8 +378,7 @@ taskRoutes.post('/:id/fail', async (req, res) => {
   recordTaskFailure(senderSessionId);
 
   // Notify lead about the failure
-  const sender = getMember(senderSessionId)!;
-  const leadSessionId = getLeadSessionId(sender.officeId || undefined);
+  const leadSessionId = getLeadSessionId(task.officeId || sender.officeId || undefined);
   if (leadSessionId && leadSessionId !== senderSessionId) {
     injectMessage(leadSessionId, `[SWARM SYSTEM]: ${sender.agentName} failed task "${task.title}" (${task.id}): ${reason}`);
   }
@@ -340,6 +396,12 @@ taskRoutes.post('/:id/verify', async (req, res) => {
   const { command, exitCode, outputSnippet, ranAt } = req.body;
   if (!command || exitCode === undefined) {
     return res.status(400).json({ error: "Missing 'command' or 'exitCode' field" });
+  }
+
+  const sender = getMember(senderSessionId)!;
+  const existingTask = await getTask(req.params.id);
+  if (!existingTask || existingTask.officeId !== sender.officeId) {
+    return res.status(404).json({ error: 'Task not found' });
   }
 
   const task = await addVerificationRun(req.params.id, {
@@ -368,6 +430,16 @@ taskRoutes.post('/:id/release', async (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
+  const officeId = resolveOfficeId(req);
+  if (isDashboard && !officeId) {
+    return res.status(400).json({ error: 'Missing office context' });
+  }
+
+  const existingTask = await getTask(req.params.id);
+  if (!existingTask || !taskMatchesOffice(existingTask, officeId)) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
   const released = await releaseCheckout(req.params.id);
   if (!released) return res.status(404).json({ error: 'No active checkout on this task' });
 
@@ -376,20 +448,44 @@ taskRoutes.post('/:id/release', async (req, res) => {
 });
 
 // GET /api/swarm/tasks/locks — List all active checkout locks
-taskRoutes.get('/locks', (_req, res) => {
-  const locks = getAllCheckoutLocks().map(lock => ({
-    ...lock,
-    stale: isLockStale(lock),
-    sessionAlive: sessions.has(lock.sessionId),
-    lockedAtISO: new Date(lock.lockedAt).toISOString(),
-  }));
+taskRoutes.get('/locks', async (req, res) => {
+  const officeId = resolveOfficeId(req);
+  if (!officeId) {
+    return res.json({ locks: [] });
+  }
+
+  const locks: Array<{
+    taskId: string;
+    sessionId: string;
+    agentName: string;
+    lockedAt: number;
+    officeId?: string;
+    stale: boolean;
+    sessionAlive: boolean;
+    lockedAtISO: string;
+  }> = [];
+
+  for (const lock of getAllCheckoutLocks()) {
+    const task = await getTask(lock.taskId);
+    if (task?.officeId !== officeId) continue;
+    locks.push({
+      ...lock,
+      officeId: task?.officeId,
+      stale: isLockStale(lock),
+      sessionAlive: sessions.has(lock.sessionId),
+      lockedAtISO: new Date(lock.lockedAt).toISOString(),
+    });
+  }
+
   res.json({ locks });
 });
 
 // GET /api/swarm/tasks/:id — Get a single task with dependency details
 taskRoutes.get('/:id', async (req, res) => {
   const task = await getTask(req.params.id);
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+  if (!task || !taskMatchesOffice(task, resolveOfficeId(req))) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
 
   // Resolve dependency details
   let dependencies: Array<{ id: string; title?: string; status?: string }> | undefined;
@@ -415,6 +511,12 @@ taskRoutes.delete('/:id', async (req, res) => {
   const senderSessionId = req.headers['x-session-id'] as string | undefined;
   if (!senderSessionId || !getMember(senderSessionId)) {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const sender = getMember(senderSessionId)!;
+  const existingTask = await getTask(req.params.id);
+  if (!existingTask || existingTask.officeId !== sender.officeId) {
+    return res.status(404).json({ error: 'Task not found' });
   }
 
   const deleted = await deleteTask(req.params.id);
