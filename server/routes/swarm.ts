@@ -12,6 +12,7 @@ import { getProjectPath } from './project.js';
 import { injectMessage } from '../services/pty-writer.js';
 import { getStructuredStatus } from '../services/activity-parser.js';
 import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand, rotateAgent } from '../services/shift-manager.js';
+import { getOfficeCostSummary, getGlobalCostSummary } from '../services/cost-tracker.js';
 
 export const swarmRoutes = Router();
 
@@ -82,6 +83,16 @@ swarmRoutes.get('/dashboard', async (req, res) => {
 
   const agents = await getStructuredStatus(officeId);
   res.json({ agents, generatedAt: new Date().toISOString() });
+});
+
+// GET /api/swarm/costs — Cost summary (per-office or global)
+swarmRoutes.get('/costs', (_req, res) => {
+  const officeId = _req.query.officeId as string | undefined;
+  if (officeId) {
+    res.json(getOfficeCostSummary(officeId));
+  } else {
+    res.json(getGlobalCostSummary());
+  }
 });
 
 // POST /api/swarm/summon — Spawn a pending (unbooted) shift slot by name

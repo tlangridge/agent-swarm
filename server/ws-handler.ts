@@ -13,6 +13,7 @@ import { schedulePersistState } from './services/session-persistence.js';
 import { handleSlotExit } from './services/shift-manager.js';
 import { onCompaction } from './services/context-monitor.js';
 import { releaseSessionCheckouts } from './services/task-board.js';
+import { parseCostFromOutput, removeCostTracking } from './services/cost-tracker.js';
 
 type PermissionMode = 'autonomous' | 'regular';
 interface CreateMsg { type: 'create'; requestId?: string; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; executionMode?: ExecutionMode; permissionMode?: PermissionMode; swarmRole?: SwarmRole; functionalRole?: FunctionalRole | null; projectPath?: string; cols: number; rows: number }
@@ -108,6 +109,13 @@ swarmEvents.on('shift:status', (data) => {
   }
 });
 
+// Broadcast cost updates to all browser clients
+swarmEvents.on('cost:update', (data) => {
+  for (const client of connectedClients) {
+    send(client, { type: 'cost:update', ...data });
+  }
+});
+
 // Notify agents via PTY when their role changes
 swarmEvents.on('member:role-changed', (member) => {
   const session = sessions.get(member.sessionId);
@@ -134,6 +142,9 @@ function accumScrollback(session: PtySession, data: string): void {
     session.compactionCount++;
     onCompaction(session.id, session.compactionCount);
   }
+
+  // Detect cost updates from Claude Code output
+  parseCostFromOutput(session.id, data);
 
   schedulePersistState();
 }
@@ -178,6 +189,9 @@ function bridgeSession(sessionId: string): void {
     handleSlotExit(sessionId, exitCode).catch(err => {
       console.error('handleSlotExit error:', err);
     });
+
+    // Clean up cost tracking for this session
+    removeCostTracking(sessionId);
 
     unregisterSession(sessionId);
     sessionBridges.delete(sessionId);
@@ -341,6 +355,7 @@ export function handleWebSocket(ws: WebSocket): void {
           }
         }).catch(err => console.error('Failed to release session checkouts on kill:', err));
         killSession(msg.sessionId);
+        removeCostTracking(msg.sessionId);
         removeMember(msg.sessionId);
         sessionBridges.delete(msg.sessionId);
         unregisterSession(msg.sessionId);

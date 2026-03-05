@@ -4,11 +4,12 @@ import { FUNCTIONAL_ROLE_COLORS, FUNCTIONAL_ROLE_LABELS } from '../types';
 
 interface Props {
   shift: ShiftState;
+  totalShiftCost?: number;
   onBadgeOut: (officeId: string) => void;
   onCloseShift: (officeId: string) => void;
 }
 
-export default function ShiftStatusBar({ shift, onBadgeOut, onCloseShift }: Props) {
+export default function ShiftStatusBar({ shift, totalShiftCost, onBadgeOut, onCloseShift }: Props) {
   const [secondsRemaining, setSecondsRemaining] = useState<number>(60);
 
   useEffect(() => {
@@ -83,6 +84,9 @@ export default function ShiftStatusBar({ shift, onBadgeOut, onCloseShift }: Prop
             );
           })}
         </div>
+        {totalShiftCost != null && totalShiftCost > 0 && (
+          <span className="shift-cost-badge">${totalShiftCost.toFixed(2)}</span>
+        )}
       </div>
       {isClosing ? (
         <button className="office-btn danger shift-end-btn" onClick={() => {

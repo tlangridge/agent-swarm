@@ -62,6 +62,7 @@ export default function App() {
   const lastActivityRef = useRef<Map<string, number>>(new Map());
   const [outputPreviews, setOutputPreviews] = useState<Map<string, string[]>>(new Map());
   const [lastActivityAt, setLastActivityAt] = useState<Map<string, number>>(new Map());
+  const [totalShiftCost, setTotalShiftCost] = useState(0);
 
   const { agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, createAgent, updateAgent, deleteAgent, refresh } = useAgents();
   const { worktrees, isGitRepo, createWorktree, refresh: refreshWorktrees } = useWorktrees();
@@ -512,6 +513,21 @@ export default function App() {
             }
             break;
           }
+
+          case 'cost:update': {
+            // Fetch the latest total shift cost from the server
+            if (msg.officeId) {
+              fetch(`/api/swarm/costs?officeId=${encodeURIComponent(msg.officeId)}`)
+                .then(res => res.json())
+                .then(data => {
+                  if (typeof data.totalCost === 'number') {
+                    setTotalShiftCost(data.totalCost);
+                  }
+                })
+                .catch(() => {});
+            }
+            break;
+          }
         }
       };
     }
@@ -906,6 +922,7 @@ export default function App() {
       {activeShift && activeShift.status !== 'ended' && (
         <ShiftStatusBar
           shift={activeShift}
+          totalShiftCost={totalShiftCost}
           onBadgeOut={handleBadgeOut}
           onCloseShift={handleCloseShift}
         />

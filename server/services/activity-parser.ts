@@ -4,6 +4,7 @@ import type { SwarmRole, FunctionalRole, CircuitState } from './swarm-registry.j
 import { listTasks } from './task-board.js';
 import { getActiveShift } from './shift-manager.js';
 import { computeContextHealth } from './context-monitor.js';
+import { getCostRecord } from './cost-tracker.js';
 
 export interface AgentStructuredStatus {
   agentName: string;
@@ -22,6 +23,9 @@ export interface AgentStructuredStatus {
   contextHealth: number;
   compactionCount: number;
   totalOutputKB: number;
+  totalCost: number;
+  budgetCents: number | null;
+  budgetPercent: number | null;
 }
 
 // Patterns to detect meaningful actions from cleaned terminal output
@@ -107,6 +111,14 @@ export async function getStructuredStatus(scopeOfficeId?: string): Promise<Agent
     // Find worktree branch from shift slot state
     const slotState = shift?.slots.find(s => s.sessionId === member.sessionId);
 
+    // Cost tracking data
+    const costRecord = getCostRecord(member.sessionId);
+    const totalCost = costRecord?.totalCost ?? 0;
+    const budgetCents = costRecord?.budgetCents ?? null;
+    const budgetPercent = budgetCents
+      ? Math.round((totalCost * 100) / (budgetCents / 100) * 100) / 100
+      : null;
+
     result.push({
       agentName: member.agentName || 'Unknown',
       functionalRole: member.functionalRole,
@@ -124,6 +136,9 @@ export async function getStructuredStatus(scopeOfficeId?: string): Promise<Agent
       contextHealth: computeContextHealth(member.sessionId),
       compactionCount: session?.compactionCount ?? 0,
       totalOutputKB: Math.round((session?.totalOutputBytes ?? 0) / 1024),
+      totalCost,
+      budgetCents,
+      budgetPercent,
     });
   }
 

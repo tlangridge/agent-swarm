@@ -2694,6 +2694,55 @@ body {
   color: #c0caf5;
 }
 
+/* Agent Card — Cost Display */
+.agent-card-cost {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.agent-card-cost-amount {
+  color: #e0af68;
+  font-weight: 600;
+  font-family: Menlo, Monaco, 'Courier New', monospace;
+  white-space: nowrap;
+}
+.agent-card-budget-bar {
+  flex: 1;
+  height: 4px;
+  background: #292e42;
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 40px;
+}
+.agent-card-budget-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+.agent-card-budget-label {
+  font-size: 10px;
+  color: #565f89;
+  white-space: nowrap;
+}
+
+/* Shift Status Bar — Cost Badge */
+.shift-cost-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: Menlo, Monaco, 'Courier New', monospace;
+  color: #e0af68;
+  background: #e0af6815;
+  border: 1px solid #e0af6833;
+  border-radius: 4px;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
 /* Focused split view */
 .focused-split-view {
   display: flex;

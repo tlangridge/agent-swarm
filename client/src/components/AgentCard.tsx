@@ -123,6 +123,33 @@ export default function AgentCard({
         </div>
       )}
 
+      {structuredStatus && structuredStatus.totalCost > 0 && (
+        <div className="agent-card-cost">
+          <span className="agent-card-cost-amount">
+            ${structuredStatus.totalCost.toFixed(2)}
+          </span>
+          {structuredStatus.budgetCents != null && structuredStatus.budgetPercent != null && (
+            <>
+              <div className="agent-card-budget-bar">
+                <div
+                  className="agent-card-budget-fill"
+                  style={{
+                    width: `${Math.min(100, structuredStatus.budgetPercent)}%`,
+                    backgroundColor: structuredStatus.budgetPercent >= 100 ? '#f7768e'
+                      : structuredStatus.budgetPercent >= 95 ? '#ff9e64'
+                      : structuredStatus.budgetPercent >= 80 ? '#e0af68'
+                      : '#9ece6a',
+                  }}
+                />
+              </div>
+              <span className="agent-card-budget-label">
+                {Math.round(structuredStatus.budgetPercent)}% of ${(structuredStatus.budgetCents / 100).toFixed(2)}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
       {lastAction ? (
         <div className="agent-card-last-action">{lastAction}</div>
       ) : null}

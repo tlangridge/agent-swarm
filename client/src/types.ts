@@ -64,6 +64,7 @@ export interface OfficeSlot {
   executionMode?: ExecutionMode;
   useWorktree?: boolean;
   autoSpawn?: boolean;
+  budgetCents?: number;
   soul?: string;
   memory?: string;
   instructions?: string;
@@ -92,6 +93,7 @@ export interface Office {
   worktreeMode?: 'per-agent' | 'shared' | 'disabled';
   spawnMode?: 'eager' | 'demand';
   idleDismissMinutes?: number;
+  totalBudgetCents?: number;
   soul?: string;
   memory?: string;
   instructions?: string;
@@ -301,6 +303,7 @@ export interface WsSessionSpawnedMsg { type: 'session:spawned'; sessionId: strin
 export interface WsSessionRestoreMsg { type: 'session:restore'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; scrollback?: string; officeId?: string }
 export interface WsShiftProgressMsg { type: 'shift:progress'; officeId: string; slotIndex: number; slotName: string; status: ShiftSlotStatus; sessionId?: string; error?: string }
 export interface WsShiftStatusMsg { type: 'shift:status'; shift: ShiftState }
+export interface WsCostUpdateMsg { type: 'cost:update'; sessionId: string; agentName: string; officeId: string; totalCost: number; budgetCents: number | null; budgetPercent: number | null }
 
 export type NotificationType = 'shift_ended' | 'agent_failed' | 'shift_review' | 'all_tasks_done';
 
@@ -319,7 +322,7 @@ export interface WsOfficeNotificationMsg {
   notification: OfficeNotification;
 }
 
-export type ServerMessage = WsCreatedMsg | WsOutputMsg | WsExitedMsg | WsErrorMsg | WsSwarmUpdateMsg | WsSessionSpawnedMsg | WsSessionRestoreMsg | WsShiftProgressMsg | WsShiftStatusMsg | WsOfficeNotificationMsg;
+export type ServerMessage = WsCreatedMsg | WsOutputMsg | WsExitedMsg | WsErrorMsg | WsSwarmUpdateMsg | WsSessionSpawnedMsg | WsSessionRestoreMsg | WsShiftProgressMsg | WsShiftStatusMsg | WsCostUpdateMsg | WsOfficeNotificationMsg;
 
 // --- Saved session picker types ---
 
@@ -366,4 +369,7 @@ export interface AgentStructuredStatus {
   contextHealth: number;
   compactionCount: number;
   totalOutputKB: number;
+  totalCost: number;
+  budgetCents: number | null;
+  budgetPercent: number | null;
 }

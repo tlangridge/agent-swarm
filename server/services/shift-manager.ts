@@ -19,6 +19,7 @@ import { startContextMonitor, stopContextMonitor } from './context-monitor.js';
 import { listFiles, readFile, writeFile } from './workspace-files.js';
 import { listTasks } from './task-board.js';
 import type { TaskItem } from './task-board.js';
+import { initCostTracking, getOfficeCostSummary } from './cost-tracker.js';
 
 export type ShiftSlotStatus = 'pending' | 'booting' | 'active' | 'failed' | 'ended';
 export type ShiftStatus = 'starting' | 'active' | 'review' | 'closing' | 'ending' | 'ended';
@@ -350,6 +351,9 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         joinedAt: new Date().toISOString(),
       });
 
+      // Initialize cost tracking for this session
+      initCostTracking(sessionId, agent.name, office.id, slot.budgetCents);
+
       // Emit session:spawned for ws-handler to bridge output + create tile
       swarmEvents.emit('session:spawned', {
         sessionId,
@@ -554,9 +558,26 @@ export async function badgeOut(officeId: string): Promise<ShiftState | null> {
     console.log(`Shift worktrees preserved:\n${worktreeSummary}`);
   }
 
+  // Capture cost summary before ending
+  const costSummary = getOfficeCostSummary(shift.officeId);
+  if (costSummary.totalCost > 0) {
+    console.log(`Shift cost summary for "${shift.officeName}": $${costSummary.totalCost.toFixed(2)} total`);
+    for (const ac of costSummary.agentCosts) {
+      const budgetStr = ac.budgetCents != null
+        ? ` (budget: $${(ac.budgetCents / 100).toFixed(2)}, ${ac.budgetPercent?.toFixed(0)}% used)`
+        : '';
+      console.log(`  ${ac.agentName}: $${ac.totalCost.toFixed(2)}${budgetStr}`);
+    }
+  }
+
   shift.status = 'ended';
   emitShiftStatus(shift);
-  fireWebhook('shift:ended', { officeId: shift.officeId, officeName: shift.officeName });
+  fireWebhook('shift:ended', {
+    officeId: shift.officeId,
+    officeName: shift.officeName,
+    totalCost: costSummary.totalCost,
+    agentCosts: costSummary.agentCosts,
+  });
 
   activeShifts.delete(officeId);
   return shift;
@@ -717,6 +738,9 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
         functionalRole: slot.functionalRole,
         joinedAt: new Date().toISOString(),
       });
+
+      // Initialize cost tracking for respawned session
+      initCostTracking(newSessionId, agent.name, activeShift.officeId, slot.budgetCents);
 
       swarmEvents.emit('session:spawned', {
         sessionId: newSessionId,
@@ -1005,6 +1029,9 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
       functionalRole: slot.functionalRole,
       joinedAt: new Date().toISOString(),
     });
+
+    // Initialize cost tracking for on-demand spawned session
+    initCostTracking(sessionId, agent.name, office.id, slot.budgetCents);
 
     swarmEvents.emit('session:spawned', {
       sessionId,

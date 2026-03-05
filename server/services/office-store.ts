@@ -23,6 +23,7 @@ export interface OfficeSlot {
   executionMode?: ExecutionMode;
   useWorktree?: boolean;    // default true; false keeps agent on main checkout
   autoSpawn?: boolean;      // in 'demand' mode, spawn at badge-in? default true for lead only
+  budgetCents?: number;     // per-slot cost budget in cents
   soul?: string;
   memory?: string;
   instructions?: string;
@@ -51,6 +52,7 @@ export interface Office {
   worktreeMode?: 'per-agent' | 'shared' | 'disabled';  // default 'per-agent'
   spawnMode?: 'eager' | 'demand';                       // default 'eager'
   idleDismissMinutes?: number;                           // 0 = disabled (default)
+  totalBudgetCents?: number;                              // total office cost budget in cents
   soul?: string;
   memory?: string;
   instructions?: string;
