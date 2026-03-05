@@ -103,7 +103,7 @@ export default function OfficeDashboard({ offices, activeShifts, agents, onBadge
                   </button>
                 ) : (
                   <>
-                    {(shift.status === 'active' || shift.status === 'review') && (
+                    {(shift.status === 'starting' || shift.status === 'active' || shift.status === 'review') && (
                       <button className="office-btn primary" onClick={() => {
                         if (window.confirm(`Close shift "${shift.officeName}"? Agents will have 60 seconds to write close-out notes.`)) onCloseShift(shift.officeId);
                       }}>

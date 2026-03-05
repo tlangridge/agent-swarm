@@ -19,11 +19,11 @@ json_string() {
   printf '"%s"' "$s"
 }
 
-api_get()      { curl -s "$API$1"; }
+api_get()      { curl -s --max-time 10 "$API$1"; }
 api_get_auth() {
   require_sid
   local response http_code body
-  response=$(curl -s -w "\n%{http_code}" -H "X-Session-Id: $SID" "$API$1")
+  response=$(curl -s --max-time 10 -w "\n%{http_code}" -H "X-Session-Id: $SID" "$API$1")
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
   echo "$body"
@@ -32,7 +32,7 @@ api_get_auth() {
 api_post() {
   require_sid
   local response http_code body
-  response=$(curl -s -w "\n%{http_code}" -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
+  response=$(curl -s --max-time 10 -w "\n%{http_code}" -X POST -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
   echo "$body"
@@ -41,7 +41,7 @@ api_post() {
 api_put() {
   require_sid
   local response http_code body
-  response=$(curl -s -w "\n%{http_code}" -X PUT -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
+  response=$(curl -s --max-time 10 -w "\n%{http_code}" -X PUT -H "Content-Type: application/json" -H "X-Session-Id: $SID" -d "$2" "$API$1")
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
   echo "$body"
@@ -50,7 +50,7 @@ api_put() {
 api_delete() {
   require_sid
   local response http_code body
-  response=$(curl -s -w "\n%{http_code}" -X DELETE -H "X-Session-Id: $SID" "$API$1")
+  response=$(curl -s --max-time 10 -w "\n%{http_code}" -X DELETE -H "X-Session-Id: $SID" "$API$1")
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
   echo "$body"
@@ -168,15 +168,17 @@ cmd_task_verify() {
 }
 
 cmd_task_fail() {
-  local id="" reason=""
+  local id="${1:-}"
+  [ -z "$id" ] && { echo "Usage: swarm task fail <id> [reason]" >&2; exit 1; }
+  shift
+  local reason=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --reason) reason="$2"; shift 2 ;;
       -*) echo "Unknown flag: $1" >&2; exit 1 ;;
-      *)  if [ -z "$id" ]; then id="$1"; else reason="${reason:+$reason }$1"; fi; shift ;;
+      *)  reason="${reason:+$reason }$1"; shift ;;
     esac
   done
-  [ -z "$id" ] && { echo "Usage: swarm task fail <id> [reason]" >&2; exit 1; }
   api_post "/api/swarm/tasks/$id/fail" "{\"reason\":$(json_string "${reason:-No reason given}")}"
 }
 
@@ -222,7 +224,10 @@ cmd_task_create() {
 }
 
 cmd_task_update() {
-  local id="" status="" assign="" stage="" branch="" pr="" pr_url="" issue="" issue_url=""
+  local id="${1:-}"
+  [ -z "$id" ] && { echo "Usage: swarm task update <id> [--status S] [--assign A] [--stage S] [--branch B] [--pr N] [--pr-url U] [--issue N] [--issue-url U]" >&2; exit 1; }
+  shift
+  local status="" assign="" stage="" branch="" pr="" pr_url="" issue="" issue_url=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --status)    status="$2"; shift 2 ;;
@@ -234,10 +239,9 @@ cmd_task_update() {
       --issue)     issue="$2"; shift 2 ;;
       --issue-url) issue_url="$2"; shift 2 ;;
       -*) echo "Unknown flag: $1" >&2; exit 1 ;;
-      *)  [ -z "$id" ] && id="$1"; shift ;;
+      *)  shift ;;
     esac
   done
-  [ -z "$id" ] && { echo "Usage: swarm task update <id> [--status S] [--assign A] [--stage S] [--branch B] [--pr N] [--pr-url U] [--issue N] [--issue-url U]" >&2; exit 1; }
   local body="{" first=1
   add_field() { [ "$first" = "1" ] && first=0 || body="$body,"; body="$body\"$1\":$(json_string "$2")"; }
   add_num() { [ "$first" = "1" ] && first=0 || body="$body,"; body="$body\"$1\":$2"; }
@@ -278,15 +282,17 @@ cmd_task_pick() {
 }
 
 cmd_task_done() {
-  local id="" output=""
+  local id="${1:-}"
+  [ -z "$id" ] && { echo "Usage: swarm task done <id> [--output \"...\"]" >&2; exit 1; }
+  shift
+  local output=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --output) output="$2"; shift 2 ;;
       -*) echo "Unknown flag: $1" >&2; exit 1 ;;
-      *)  [ -z "$id" ] && id="$1"; shift ;;
+      *)  shift ;;
     esac
   done
-  [ -z "$id" ] && { echo "Usage: swarm task done <id> [--output \"...\"]" >&2; exit 1; }
   if [ -n "$output" ]; then
     api_post "/api/swarm/tasks/$id/done" "{\"output\":$(json_string "$output")}"
   else

@@ -587,7 +587,7 @@ export async function badgeOut(officeId: string): Promise<ShiftState | null> {
 
 export async function closeShift(officeId: string): Promise<{ closing: boolean; shiftNumber: number; closeDocPath: string }> {
   const shift = activeShifts.get(officeId);
-  if (!shift || (shift.status !== 'active' && shift.status !== 'review')) {
+  if (!shift || (shift.status !== 'starting' && shift.status !== 'active' && shift.status !== 'review')) {
     throw new Error('No active shift to close');
   }
 
@@ -622,7 +622,7 @@ export async function closeShift(officeId: string): Promise<{ closing: boolean; 
   const closeMsg = [
     `[SWARM SYSTEM]: Shift #${shiftNumber} is closing.`,
     `You have 60 seconds to append your shift notes to the close report.`,
-    `Run: swarm write ${closeDocPath} --append "Your notes here"`,
+    `Run: swarm append ${closeDocPath} --content "Your notes here"`,
     `After 60 seconds, all agents will be signed out automatically.`,
   ].join('\n');
 
