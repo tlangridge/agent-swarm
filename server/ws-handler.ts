@@ -15,6 +15,7 @@ import { onCompaction } from './services/context-monitor.js';
 import { releaseSessionCheckouts } from './services/task-board.js';
 import { parseCostFromOutput, removeCostTracking } from './services/cost-tracker.js';
 import { cleanupSkillDir } from './services/skill-injector.js';
+import { resolveKeysForSession } from './services/key-store.js';
 
 type PermissionMode = 'autonomous' | 'regular';
 interface CreateMsg { type: 'create'; requestId?: string; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; executionMode?: ExecutionMode; permissionMode?: PermissionMode; swarmRole?: SwarmRole; functionalRole?: FunctionalRole | null; projectPath?: string; cols: number; rows: number }
@@ -297,8 +298,9 @@ export function handleWebSocket(ws: WebSocket): void {
         // Use per-session project path if provided, otherwise fall back to global
         const effectivePath = msg.projectPath || getProjectPath();
 
+        const resolvedKeys = resolveKeysForSession('');  // ad-hoc, no office
         try {
-          spawnSession(sessionId, msg.cliType, msg.cols, msg.rows, agent, msg.executionMode, msg.permissionMode, swarmRole, effectivePath || undefined, msg.functionalRole, undefined, personaCtx);
+          spawnSession(sessionId, msg.cliType, msg.cols, msg.rows, agent, msg.executionMode, msg.permissionMode, swarmRole, effectivePath || undefined, msg.functionalRole, undefined, personaCtx, undefined, undefined, undefined, resolvedKeys);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : 'Failed to spawn terminal';
           console.error(`PTY spawn failed for ${msg.cliType}:`, message);

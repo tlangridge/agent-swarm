@@ -177,9 +177,10 @@ export function spawnSession(
   worktreeBranch?: string,
   officeId?: string | null,
   skills?: string[],
+  resolvedKeys?: Record<string, string>,
 ): PtySession {
   if (executionMode === 'docker') {
-    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx, officeId, skills);
+    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx, officeId, skills, resolvedKeys);
   }
   const effectiveProjectPath = projectPath || process.env.HOME || '/tmp';
 
@@ -196,7 +197,7 @@ export function spawnSession(
   const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl, effectiveProjectPath, worktreeBranch, functionalRole, pipeline, personaCtx, skillDirPath);
 
   // Build env with full PATH from login shell
-  const env: Record<string, string> = { ...process.env as Record<string, string> };
+  const env: Record<string, string> = { ...process.env as Record<string, string>, ...resolvedKeys };
   delete env.CLAUDECODE; // Allow Claude Code to launch from within a Claude Code session
 
   // Add swarm CLI and common bin dirs to PATH
@@ -331,6 +332,7 @@ function spawnDockerSession(
   personaCtx?: PersonaContext,
   officeId?: string | null,
   skills?: string[],
+  resolvedKeys?: Record<string, string>,
 ): PtySession {
   const containerName = `agent-swarm-${id.slice(0, 8)}`;
   const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode);
@@ -360,16 +362,18 @@ function spawnDockerSession(
     dockerArgs.push('--add-host=host.docker.internal:host-gateway');
   }
 
-  // Pass API keys as env vars
+  // Pass API keys as env vars (resolved keys take priority over process.env)
   const envKeys = [
     'ANTHROPIC_API_KEY',
     'GOOGLE_API_KEY',
     'GEMINI_API_KEY',
     'OPENAI_API_KEY',
+    'AGENTMAIL_API_KEY',
   ];
   for (const key of envKeys) {
-    if (process.env[key]) {
-      dockerArgs.push('-e', `${key}=${process.env[key]}`);
+    const value = resolvedKeys?.[key] || process.env[key];
+    if (value) {
+      dockerArgs.push('-e', `${key}=${value}`);
     }
   }
 

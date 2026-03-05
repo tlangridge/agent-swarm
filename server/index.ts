@@ -13,6 +13,7 @@ import { workspaceRoutes } from './routes/workspace.js';
 import { projectRoutes } from './routes/project.js';
 import { worktreeRoutes } from './routes/worktrees.js';
 import { sessionRoutes } from './routes/sessions.js';
+import { keyRoutes } from './routes/keys.js';
 import { killAll, validateCliTools } from './pty-manager.js';
 import { detectDocker, isDockerAvailable, isImageBuilt, buildImage } from './docker-builder.js';
 import { persistStateNow } from './services/session-persistence.js';
@@ -20,6 +21,7 @@ import { migrateFromRosters } from './services/office-store.js';
 import { initNotificationManager, getNotifications } from './services/notification-manager.js';
 import { rehydrateCheckoutLocks } from './services/task-board.js';
 import { cleanupOrphanedSkillDirs } from './services/skill-injector.js';
+import { ensureKeyDirs } from './services/key-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '3010', 10);
@@ -58,6 +60,7 @@ app.use('/api/offices', officeRoutes);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/project', projectRoutes);
 app.use('/api/worktrees', worktreeRoutes);
+app.use('/api/keys', keyRoutes);
 
 app.get('/api/notifications', (req, res) => {
   const officeId = req.query.officeId as string | undefined;
@@ -137,6 +140,7 @@ server.listen(PORT, async () => {
     return;
   }
 
+  ensureKeyDirs();
   await migrateFromRosters();
   await rehydrateCheckoutLocks();
   cleanupOrphanedSkillDirs();

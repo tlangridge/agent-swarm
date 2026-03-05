@@ -20,6 +20,7 @@ import { listFiles, readFile, writeFile } from './workspace-files.js';
 import { listTasks } from './task-board.js';
 import type { TaskItem } from './task-board.js';
 import { initCostTracking, getOfficeCostSummary } from './cost-tracker.js';
+import { resolveKeysForSession } from './key-store.js';
 
 export type ShiftSlotStatus = 'pending' | 'booting' | 'active' | 'failed' | 'ended';
 export type ShiftStatus = 'starting' | 'active' | 'review' | 'closing' | 'ending' | 'ended';
@@ -331,11 +332,12 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         }
       }
 
+      const resolvedKeys = resolveKeysForSession(office.id);
       spawnSession(
         sessionId, cliType, 80, 24, agent,
         executionMode, permissionMode, swarmRole,
         agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-        worktreeBranch, office.id, slot.skills,
+        worktreeBranch, office.id, slot.skills, resolvedKeys,
       );
 
       addMember({
@@ -719,11 +721,12 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       const respawnProjectPath = slotState.worktreePath || projectPath;
       const respawnWorktreeBranch = slotState.worktreeBranch;
 
+      const resolvedKeys = resolveKeysForSession(activeShift.officeId);
       spawnSession(
         newSessionId, cliType, 80, 24, agent,
         slot.executionMode || 'local', slot.permissionMode || 'autonomous', swarmRole,
         respawnProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-        respawnWorktreeBranch, shift.officeId, slot.skills,
+        respawnWorktreeBranch, shift.officeId, slot.skills, resolvedKeys,
       );
 
       addMember({
@@ -1010,11 +1013,12 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
       }
     }
 
+    const resolvedKeys = resolveKeysForSession(activeShift.officeId);
     spawnSession(
       sessionId, cliType, 80, 24, agent,
       executionMode, permissionMode, swarmRole,
       agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-      worktreeBranch, shift.officeId, slot.skills,
+      worktreeBranch, shift.officeId, slot.skills, resolvedKeys,
     );
 
     addMember({
