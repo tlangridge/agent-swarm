@@ -155,7 +155,7 @@ export default function AgentPicker({ agents, agentmailConfigured, dockerAvailab
                   <span>Autonomous adds <span className="info-text">--dangerously-skip-permissions</span> for Claude.</span>
                 )}
                 {selectedCli === 'codex' && (
-                  <span>Autonomous adds <span className="info-text">--yolo</span> for Codex.</span>
+                  <span>Autonomous adds <span className="info-text">--yolo</span> for Codex. Role-based model + reasoning defaults are applied server-side.</span>
                 )}
                 {selectedCli !== 'claude' && selectedCli !== 'codex' && (
                   <span>This CLI currently ignores permission mode.</span>

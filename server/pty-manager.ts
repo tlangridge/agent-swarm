@@ -110,6 +110,22 @@ function resolveCliPath(cliType: CliType): string {
 
 export type PermissionMode = 'autonomous' | 'regular';
 
+function tomlStringLiteral(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function getCodexModelForRole(swarmRole: SwarmRole): string {
+  const universal = process.env.SWARM_CODEX_MODEL?.trim();
+  const lead = process.env.SWARM_CODEX_MODEL_LEAD?.trim();
+  const worker = process.env.SWARM_CODEX_MODEL_WORKER?.trim();
+  if (swarmRole === 'lead') return lead || universal || 'gpt-5.4';
+  return worker || universal || 'gpt-5.3-codex';
+}
+
+function getCodexReasoningEffort(): string {
+  return process.env.SWARM_CODEX_REASONING_EFFORT?.trim() || 'xhigh';
+}
+
 function getAutonomousArgs(cliType: CliType, permissionMode: PermissionMode): string[] {
   if (permissionMode !== 'autonomous') return [];
   switch (cliType) {
@@ -122,6 +138,19 @@ function getAutonomousArgs(cliType: CliType, permissionMode: PermissionMode): st
     default:
       return [];
   }
+}
+
+function getCodexArgs(swarmRole: SwarmRole, permissionMode: PermissionMode): string[] {
+  const args = getAutonomousArgs('codex', permissionMode);
+  const model = getCodexModelForRole(swarmRole);
+  const reasoningEffort = getCodexReasoningEffort();
+  if (model) {
+    args.push('--model', model);
+  }
+  if (reasoningEffort) {
+    args.push('-c', `model_reasoning_effort=${tomlStringLiteral(reasoningEffort)}`);
+  }
+  return args;
 }
 
 function getCliArgs(
@@ -155,7 +184,7 @@ function getCliArgs(
     return args;
   }
   if (cliType === 'codex') {
-    return getAutonomousArgs(cliType, permissionMode);
+    return getCodexArgs(swarmRole, permissionMode);
   }
   if (cliType === 'gemini') {
     return getAutonomousArgs(cliType, permissionMode);
@@ -274,11 +303,15 @@ export function spawnSession(
   return session;
 }
 
-function getDockerCliCommand(cliType: CliType, permissionMode: PermissionMode = 'autonomous'): { cmd: string; args: string[] } {
+function getDockerCliCommand(
+  cliType: CliType,
+  permissionMode: PermissionMode = 'autonomous',
+  swarmRole: SwarmRole = 'worker',
+): { cmd: string; args: string[] } {
   switch (cliType) {
     case 'claude': return { cmd: 'claude', args: getAutonomousArgs(cliType, permissionMode) };
     case 'gemini': return { cmd: 'gemini', args: [] };
-    case 'codex': return { cmd: 'codex', args: getAutonomousArgs(cliType, permissionMode) };
+    case 'codex': return { cmd: 'codex', args: getCodexArgs(swarmRole, permissionMode) };
     case 'opencode': return { cmd: 'opencode', args: [] };
     case 'bash': return { cmd: '/bin/bash', args: [] };
   }
@@ -338,7 +371,7 @@ function spawnDockerSession(
   resolvedKeys?: Record<string, string>,
 ): PtySession {
   const containerName = `agent-swarm-${id.slice(0, 8)}`;
-  const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode);
+  const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode, swarmRole);
   const { configDir, workspaceDir } = ensureDockerVolumeDirs(agent?.id ?? null);
   const effectiveProjectPath = projectPath || workspaceDir;
 
