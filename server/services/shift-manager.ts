@@ -37,7 +37,6 @@ export interface ShiftSlotState {
   error?: string;
   retryCount?: number;
   pendingTimeouts?: ReturnType<typeof setTimeout>[];
-  startupOrientation?: string;
 }
 
 export interface ShiftState {
@@ -88,14 +87,15 @@ function emitShiftStatus(shift: ShiftState): void {
   swarmEvents.emit('shift:status', { shift });
 }
 
-function shouldCombineStartupPrompt(cliType: CliType): boolean {
-  return cliType === 'codex';
-}
-
-function scheduleSlotMessage(slotState: ShiftSlotState, sessionId: string, message: string, delayMs: number): void {
+function scheduleSlotMessage(
+  slotState: ShiftSlotState,
+  sessionId: string,
+  message: string,
+  delayMs: number,
+): void {
   if (!slotState.pendingTimeouts) slotState.pendingTimeouts = [];
-  slotState.pendingTimeouts.push(setTimeout(() => {
-    injectMessage(sessionId, message);
+  slotState.pendingTimeouts.push(setTimeout(async () => {
+    await injectMessage(sessionId, message);
   }, delayMs));
 }
 
@@ -106,7 +106,7 @@ function buildLeadKickoffMessage(
   lastClose: Awaited<ReturnType<typeof getLastCloseDocument>>,
 ): string {
   const teamList = shift.slots
-    .filter(s => s.status === 'active')
+    .filter(s => s.status !== 'failed' && s.status !== 'ended')
     .map(s => `  - ${s.name} (${s.functionalRole})`)
     .join('\n');
 
@@ -417,11 +417,22 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       }
 
       const resolvedKeys = resolveKeysForSession(office.id);
+      const swarmApiUrl = executionMode === 'docker'
+        ? `http://host.docker.internal:${PORT}`
+        : `http://localhost:${PORT}`;
+      const orientation = cliType !== 'claude' && cliType !== 'bash'
+        ? buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx)
+        : null;
+      const codexStartupPrompt = cliType === 'codex' && orientation
+        ? `${orientation}\n\n${swarmRole === 'lead'
+          ? buildLeadKickoffMessage(office, shift, projectPath, lastClose)
+          : buildWorkerStandbyMessage(lastClose)}`
+        : undefined;
       spawnSession(
         sessionId, cliType, 80, 24, agent,
         executionMode, permissionMode, swarmRole,
         agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-        worktreeBranch, office.id, slot.skills, resolvedKeys,
+        worktreeBranch, office.id, slot.skills, resolvedKeys, codexStartupPrompt,
       );
 
       addMember({
@@ -456,16 +467,8 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
 
       // For non-Claude/non-bash agents, inject orientation after the CLI has initialized
       if (!slotState.pendingTimeouts) slotState.pendingTimeouts = [];
-      if (cliType !== 'claude' && cliType !== 'bash') {
-        const swarmApiUrl = executionMode === 'docker'
-          ? `http://host.docker.internal:${PORT}`
-          : `http://localhost:${PORT}`;
-        const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx);
-        if (shouldCombineStartupPrompt(cliType)) {
-          slotState.startupOrientation = orientation;
-        } else {
-          scheduleSlotMessage(slotState, sessionId, orientation, 2000);
-        }
+      if (orientation && cliType !== 'codex') {
+        scheduleSlotMessage(slotState, sessionId, orientation, 2000);
       }
 
       slotState.status = 'active';
@@ -512,12 +515,9 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
 
   // Send kickoff message to the lead agent
   const leadSlot = shift.slots[effectiveLeadIndex];
-  if (leadSlot.sessionId && leadSlot.status === 'active') {
+  if (leadSlot.sessionId && leadSlot.status === 'active' && leadSlot.cliType !== 'codex') {
     const kickoff = buildLeadKickoffMessage(office, shift, projectPath, lastClose);
-    const startupMessage = leadSlot.startupOrientation
-      ? `${leadSlot.startupOrientation}\n\n${kickoff}`
-      : kickoff;
-    scheduleSlotMessage(leadSlot, leadSlot.sessionId, startupMessage, leadSlot.startupOrientation ? 2000 : 3000);
+    scheduleSlotMessage(leadSlot, leadSlot.sessionId, kickoff, 3000);
   }
 
   // Send "stand by" message to ALL worker agents so they don't start working prematurely
@@ -525,10 +525,8 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
   if (workerSlots.length > 0) {
     const standbyMsg = buildWorkerStandbyMessage(lastClose);
     for (const slot of workerSlots) {
-      const startupMessage = slot.startupOrientation
-        ? `${slot.startupOrientation}\n\n${standbyMsg}`
-        : standbyMsg;
-      scheduleSlotMessage(slot, slot.sessionId!, startupMessage, slot.startupOrientation ? 2000 : 4000);
+      if (slot.cliType === 'codex') continue;
+      scheduleSlotMessage(slot, slot.sessionId!, standbyMsg, 4000);
     }
   }
 
@@ -745,6 +743,12 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       // Reuse existing worktree from slotState if available
       const respawnProjectPath = slotState.worktreePath || projectPath;
       const respawnWorktreeBranch = slotState.worktreeBranch;
+      const swarmApiUrl = (slot.executionMode || 'local') === 'docker'
+        ? `http://host.docker.internal:${PORT}`
+        : `http://localhost:${PORT}`;
+      const orientation = cliType !== 'claude' && cliType !== 'bash'
+        ? buildOrientationMessage(swarmRole, agent.name, newSessionId, swarmApiUrl, respawnProjectPath, respawnWorktreeBranch, slot.functionalRole, personaCtx)
+        : null;
 
       const resolvedKeys = resolveKeysForSession(shift.officeId);
       spawnSession(
@@ -752,6 +756,7 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
         slot.executionMode || 'local', slot.permissionMode || 'autonomous', swarmRole,
         respawnProjectPath, slot.functionalRole, office.pipeline, personaCtx,
         respawnWorktreeBranch, shift.officeId, slot.skills, resolvedKeys,
+        cliType === 'codex' ? orientation ?? undefined : undefined,
       );
 
       addMember({
@@ -785,12 +790,8 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
 
       // Inject orientation for non-Claude/non-bash agents (2s delay for CLI init)
       if (!slotState.pendingTimeouts) slotState.pendingTimeouts = [];
-      if (cliType !== 'claude' && cliType !== 'bash') {
-        const swarmApiUrl = (slot.executionMode || 'local') === 'docker'
-          ? `http://host.docker.internal:${PORT}`
-          : `http://localhost:${PORT}`;
-        const orientation = buildOrientationMessage(swarmRole, agent.name, newSessionId, swarmApiUrl, respawnProjectPath, respawnWorktreeBranch, slot.functionalRole, personaCtx);
-        slotState.pendingTimeouts.push(setTimeout(() => injectMessage(newSessionId, orientation), 2000));
+      if (orientation && cliType !== 'codex') {
+        scheduleSlotMessage(slotState, newSessionId, orientation, 2000);
       }
 
       slotState.sessionId = newSessionId;
@@ -1039,11 +1040,18 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
     }
 
     const resolvedKeys = resolveKeysForSession(shift.officeId);
+    const swarmApiUrl = executionMode === 'docker'
+      ? `http://host.docker.internal:${PORT}`
+      : `http://localhost:${PORT}`;
+    const orientation = cliType !== 'claude' && cliType !== 'bash'
+      ? buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx)
+      : null;
     spawnSession(
       sessionId, cliType, 80, 24, agent,
       executionMode, permissionMode, swarmRole,
       agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
       worktreeBranch, shift.officeId, slot.skills, resolvedKeys,
+      cliType === 'codex' ? orientation ?? undefined : undefined,
     );
 
     addMember({
@@ -1076,12 +1084,8 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
     });
 
     if (!slotState.pendingTimeouts) slotState.pendingTimeouts = [];
-    if (cliType !== 'claude' && cliType !== 'bash') {
-      const swarmApiUrl = executionMode === 'docker'
-        ? `http://host.docker.internal:${PORT}`
-        : `http://localhost:${PORT}`;
-      const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, agentProjectPath, worktreeBranch, slot.functionalRole, personaCtx);
-      slotState.pendingTimeouts.push(setTimeout(() => injectMessage(sessionId, orientation), 2000));
+    if (orientation && cliType !== 'codex') {
+      scheduleSlotMessage(slotState, sessionId, orientation, 2000);
     }
 
     slotState.status = 'active';

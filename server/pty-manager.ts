@@ -179,6 +179,7 @@ function getCliArgs(
   pipeline?: PipelineStage[],
   personaCtx?: PersonaContext,
   skillDirPath?: string | null,
+  initialPrompt?: string,
 ): string[] {
   if (cliType === 'claude') {
     const args = getAutonomousArgs(cliType, permissionMode);
@@ -197,7 +198,11 @@ function getCliArgs(
     return args;
   }
   if (cliType === 'codex') {
-    return getCodexArgs(swarmRole, permissionMode);
+    const args = getCodexArgs(swarmRole, permissionMode);
+    if (initialPrompt?.trim()) {
+      args.push(initialPrompt);
+    }
+    return args;
   }
   if (cliType === 'gemini') {
     return getAutonomousArgs(cliType, permissionMode);
@@ -222,9 +227,10 @@ export function spawnSession(
   officeId?: string | null,
   skills?: string[],
   resolvedKeys?: Record<string, string>,
+  initialPrompt?: string,
 ): PtySession {
   if (executionMode === 'docker') {
-    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx, officeId, skills, resolvedKeys);
+    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx, officeId, skills, resolvedKeys, initialPrompt);
   }
   const effectiveProjectPath = projectPath || process.env.HOME || '/tmp';
 
@@ -238,7 +244,21 @@ export function spawnSession(
 
   const swarmApiUrl = `http://localhost:${PORT}`;
   const shell = resolveCliPath(cliType);
-  const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl, effectiveProjectPath, worktreeBranch, functionalRole, pipeline, personaCtx, skillDirPath);
+  const args = getCliArgs(
+    cliType,
+    agent,
+    permissionMode,
+    swarmRole,
+    id,
+    swarmApiUrl,
+    effectiveProjectPath,
+    worktreeBranch,
+    functionalRole,
+    pipeline,
+    personaCtx,
+    skillDirPath,
+    initialPrompt,
+  );
 
   // Build env with full PATH from login shell
   const env: Record<string, string> = { ...process.env as Record<string, string>, ...resolvedKeys };
@@ -382,6 +402,7 @@ function spawnDockerSession(
   officeId?: string | null,
   skills?: string[],
   resolvedKeys?: Record<string, string>,
+  initialPrompt?: string,
 ): PtySession {
   const containerName = `agent-swarm-${id.slice(0, 8)}`;
   const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode, swarmRole);
@@ -459,6 +480,9 @@ function spawnDockerSession(
   if (cliType === 'claude' && agent) {
     const prompt = buildSwarmPrompt(swarmRole, agent, id, swarmApiUrl, undefined, undefined, functionalRole, pipeline, personaCtx);
     cliArgs.push('--append-system-prompt', prompt);
+  }
+  if (cliType === 'codex' && initialPrompt?.trim()) {
+    cliArgs.push(initialPrompt);
   }
 
   // Mount skill dir as read-only volume for Docker

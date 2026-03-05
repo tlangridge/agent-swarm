@@ -297,10 +297,34 @@ export function handleWebSocket(ws: WebSocket): void {
 
         // Use per-session project path if provided, otherwise fall back to global
         const effectivePath = msg.projectPath || getProjectPath();
+        const swarmApiUrl = msg.executionMode === 'docker'
+          ? `http://host.docker.internal:${PORT}`
+          : `http://localhost:${PORT}`;
+        const orientation = msg.cliType !== 'claude' && msg.cliType !== 'bash'
+          ? buildOrientationMessage(swarmRole, agent?.name ?? null, sessionId, swarmApiUrl, effectivePath || undefined, undefined, msg.functionalRole, personaCtx)
+          : null;
 
         const resolvedKeys = resolveKeysForSession('');  // ad-hoc, no office
         try {
-          spawnSession(sessionId, msg.cliType, msg.cols, msg.rows, agent, msg.executionMode, msg.permissionMode, swarmRole, effectivePath || undefined, msg.functionalRole, undefined, personaCtx, undefined, undefined, undefined, resolvedKeys);
+          spawnSession(
+            sessionId,
+            msg.cliType,
+            msg.cols,
+            msg.rows,
+            agent,
+            msg.executionMode,
+            msg.permissionMode,
+            swarmRole,
+            effectivePath || undefined,
+            msg.functionalRole,
+            undefined,
+            personaCtx,
+            undefined,
+            undefined,
+            undefined,
+            resolvedKeys,
+            msg.cliType === 'codex' ? orientation ?? undefined : undefined,
+          );
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : 'Failed to spawn terminal';
           console.error(`PTY spawn failed for ${msg.cliType}:`, message);
@@ -325,13 +349,9 @@ export function handleWebSocket(ws: WebSocket): void {
         });
 
         // For non-Claude agents, inject swarm orientation after a short delay
-        if (msg.cliType !== 'claude' && msg.cliType !== 'bash') {
-          const swarmApiUrl = msg.executionMode === 'docker'
-            ? `http://host.docker.internal:${PORT}`
-            : `http://localhost:${PORT}`;
-          const orientation = buildOrientationMessage(swarmRole, agent?.name ?? null, sessionId, swarmApiUrl, effectivePath || undefined, undefined, msg.functionalRole, personaCtx);
+        if (orientation && msg.cliType !== 'codex') {
           setTimeout(() => {
-            injectMessage(sessionId, orientation);
+            void injectMessage(sessionId, orientation);
           }, 500);
         }
 

@@ -315,8 +315,31 @@ swarmRoutes.post('/spawn', async (req, res) => {
     const sessionId = randomUUID();
     const spawnSender = getMember(senderSessionId);
     const spawnOfficeId = spawnSender?.officeId || '';
+    const projectPath = getProjectPath() || undefined;
+    const swarmApiUrl = `http://localhost:${PORT}`;
+    const orientation = cliType !== 'claude' && cliType !== 'bash'
+      ? buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, projectPath, undefined, functionalRole)
+      : null;
     try {
-      spawnSession(sessionId, cliType, 80, 24, agent, 'local', 'autonomous', swarmRole, getProjectPath() || undefined, functionalRole, undefined, undefined, undefined, spawnOfficeId);
+      spawnSession(
+        sessionId,
+        cliType,
+        80,
+        24,
+        agent,
+        'local',
+        'autonomous',
+        swarmRole,
+        projectPath,
+        functionalRole,
+        undefined,
+        undefined,
+        undefined,
+        spawnOfficeId,
+        undefined,
+        undefined,
+        cliType === 'codex' ? orientation ?? undefined : undefined,
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to spawn terminal';
       console.error(`PTY spawn failed for ${cliType}:`, message);
@@ -351,11 +374,9 @@ swarmRoutes.post('/spawn', async (req, res) => {
     });
 
     // For non-Claude/non-bash CLIs, inject orientation message
-    if (cliType !== 'claude' && cliType !== 'bash') {
-      const swarmApiUrl = `http://localhost:${PORT}`;
-      const orientation = buildOrientationMessage(swarmRole, agent.name, sessionId, swarmApiUrl, undefined, undefined, functionalRole);
+    if (orientation && cliType !== 'codex') {
       setTimeout(() => {
-        injectMessage(sessionId, orientation);
+        void injectMessage(sessionId, orientation);
       }, 500);
     }
 
