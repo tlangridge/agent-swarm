@@ -65,10 +65,10 @@ export interface OfficeSlot {
   useWorktree?: boolean;
   autoSpawn?: boolean;
   budgetCents?: number;
+  skills?: string[];
   soul?: string;
   memory?: string;
   instructions?: string;
-  skills?: string[];
 }
 
 export interface CronJob {

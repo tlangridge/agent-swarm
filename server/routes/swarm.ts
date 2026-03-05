@@ -13,6 +13,7 @@ import { injectMessage } from '../services/pty-writer.js';
 import { getStructuredStatus } from '../services/activity-parser.js';
 import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand, rotateAgent } from '../services/shift-manager.js';
 import { getOfficeCostSummary, getGlobalCostSummary } from '../services/cost-tracker.js';
+import { listAvailableSkills } from '../services/skill-registry.js';
 
 export const swarmRoutes = Router();
 
@@ -363,4 +364,9 @@ swarmRoutes.post('/rotate/:name', async (req, res) => {
   }
   rotateAgent(target.sessionId, req.body.reason || 'Manual rotation requested');
   res.json({ rotating: true, agent: req.params.name });
+});
+
+// GET /api/swarm/skills — List all available skills
+swarmRoutes.get('/skills', (_req, res) => {
+  res.json({ skills: listAvailableSkills() });
 });

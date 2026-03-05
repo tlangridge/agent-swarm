@@ -14,6 +14,7 @@ import { handleSlotExit } from './services/shift-manager.js';
 import { onCompaction } from './services/context-monitor.js';
 import { releaseSessionCheckouts } from './services/task-board.js';
 import { parseCostFromOutput, removeCostTracking } from './services/cost-tracker.js';
+import { cleanupSkillDir } from './services/skill-injector.js';
 
 type PermissionMode = 'autonomous' | 'regular';
 interface CreateMsg { type: 'create'; requestId?: string; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; executionMode?: ExecutionMode; permissionMode?: PermissionMode; swarmRole?: SwarmRole; functionalRole?: FunctionalRole | null; projectPath?: string; cols: number; rows: number }
@@ -185,6 +186,9 @@ function bridgeSession(sessionId: string): void {
       }
     }).catch(err => console.error('Failed to release session checkouts:', err));
 
+    // Clean up skill dir before respawn creates a new one
+    cleanupSkillDir(sessionId);
+
     // Try auto-respawn if this session belongs to an active shift
     handleSlotExit(sessionId, exitCode).catch(err => {
       console.error('handleSlotExit error:', err);
@@ -354,6 +358,7 @@ export function handleWebSocket(ws: WebSocket): void {
             console.log(`Released ${releasedTaskIds.length} checkout(s) for killed session ${msg.sessionId}`);
           }
         }).catch(err => console.error('Failed to release session checkouts on kill:', err));
+        cleanupSkillDir(msg.sessionId);
         killSession(msg.sessionId);
         removeCostTracking(msg.sessionId);
         removeMember(msg.sessionId);

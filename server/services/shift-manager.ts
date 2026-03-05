@@ -335,7 +335,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         sessionId, cliType, 80, 24, agent,
         executionMode, permissionMode, swarmRole,
         agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-        worktreeBranch, office.id,
+        worktreeBranch, office.id, slot.skills,
       );
 
       addMember({
@@ -723,7 +723,7 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
         newSessionId, cliType, 80, 24, agent,
         slot.executionMode || 'local', slot.permissionMode || 'autonomous', swarmRole,
         respawnProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-        respawnWorktreeBranch, shift.officeId,
+        respawnWorktreeBranch, shift.officeId, slot.skills,
       );
 
       addMember({
@@ -1014,7 +1014,7 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
       sessionId, cliType, 80, 24, agent,
       executionMode, permissionMode, swarmRole,
       agentProjectPath, slot.functionalRole, office.pipeline, personaCtx,
-      worktreeBranch, shift.officeId,
+      worktreeBranch, shift.officeId, slot.skills,
     );
 
     addMember({

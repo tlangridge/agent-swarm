@@ -24,10 +24,10 @@ export interface OfficeSlot {
   useWorktree?: boolean;    // default true; false keeps agent on main checkout
   autoSpawn?: boolean;      // in 'demand' mode, spawn at badge-in? default true for lead only
   budgetCents?: number;     // per-slot cost budget in cents
+  skills?: string[];        // extra skill names to inject (added to role defaults)
   soul?: string;
   memory?: string;
   instructions?: string;
-  skills?: string[];
 }
 
 export interface CronJob {

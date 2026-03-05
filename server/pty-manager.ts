@@ -8,6 +8,8 @@ import type { SwarmRole, FunctionalRole } from './services/swarm-registry.js';
 import { buildSwarmPrompt } from './services/swarm-prompts.js';
 import type { PersonaContext } from './services/swarm-prompts.js';
 import type { PipelineStage } from './services/office-store.js';
+import { getDefaultSkills } from './services/skill-registry.js';
+import { createSkillDir, cleanupSkillDir, cleanupAllSkillDirs } from './services/skill-injector.js';
 
 export const PORT = parseInt(process.env.PORT || '3010', 10);
 
@@ -26,6 +28,7 @@ export interface PtySession {
   permissionMode: PermissionMode;
   containerName: string | null;
   worktreeBranch: string | null;
+  skillDirPath: string | null;
   pty: IPty;
   cols: number;
   rows: number;
@@ -131,6 +134,7 @@ function getCliArgs(
   functionalRole?: FunctionalRole | null,
   pipeline?: PipelineStage[],
   personaCtx?: PersonaContext,
+  skillDirPath?: string | null,
 ): string[] {
   if (cliType === 'claude') {
     const args = getAutonomousArgs(cliType, permissionMode);
@@ -142,6 +146,9 @@ function getCliArgs(
         '--append-system-prompt',
         `Your identity: Name="${agent.name}", Email="${agent.email}". Use this identity when collaborating with other agents or signing up for services.`,
       );
+    }
+    if (skillDirPath) {
+      args.push('--add-dir', skillDirPath);
     }
     return args;
   }
@@ -169,15 +176,24 @@ export function spawnSession(
   personaCtx?: PersonaContext,
   worktreeBranch?: string,
   officeId?: string | null,
+  skills?: string[],
 ): PtySession {
   if (executionMode === 'docker') {
-    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx, officeId);
+    return spawnDockerSession(id, cliType, cols, rows, agent, permissionMode, swarmRole, projectPath, functionalRole, pipeline, personaCtx, officeId, skills);
   }
   const effectiveProjectPath = projectPath || process.env.HOME || '/tmp';
 
+  // Resolve and create skill directory for Claude agents
+  let skillDirPath: string | null = null;
+  if (cliType === 'claude') {
+    const defaultSkills = getDefaultSkills(swarmRole, functionalRole);
+    const allSkills = [...new Set([...defaultSkills, ...(skills || [])])];
+    skillDirPath = createSkillDir(id, allSkills);
+  }
+
   const swarmApiUrl = `http://localhost:${PORT}`;
   const shell = resolveCliPath(cliType);
-  const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl, effectiveProjectPath, worktreeBranch, functionalRole, pipeline, personaCtx);
+  const args = getCliArgs(cliType, agent, permissionMode, swarmRole, id, swarmApiUrl, effectiveProjectPath, worktreeBranch, functionalRole, pipeline, personaCtx, skillDirPath);
 
   // Build env with full PATH from login shell
   const env: Record<string, string> = { ...process.env as Record<string, string> };
@@ -238,6 +254,7 @@ export function spawnSession(
     permissionMode,
     containerName: null,
     worktreeBranch: worktreeBranch ?? null,
+    skillDirPath,
     pty: ptyProcess,
     cols,
     rows,
@@ -313,6 +330,7 @@ function spawnDockerSession(
   pipeline?: PipelineStage[],
   personaCtx?: PersonaContext,
   officeId?: string | null,
+  skills?: string[],
 ): PtySession {
   const containerName = `agent-swarm-${id.slice(0, 8)}`;
   const { cmd, args: cliArgs } = getDockerCliCommand(cliType, permissionMode);
@@ -375,10 +393,24 @@ function spawnDockerSession(
     dockerArgs.push('-e', 'NO_UPDATE_NOTIFIER=1');
   }
 
+  // Resolve and create skill directory for Claude agents (use hard copy for Docker)
+  let skillDirPath: string | null = null;
+  if (cliType === 'claude') {
+    const defaultSkills = getDefaultSkills(swarmRole, functionalRole);
+    const allSkills = [...new Set([...defaultSkills, ...(skills || [])])];
+    skillDirPath = createSkillDir(id, allSkills, true); // useHardCopy for Docker
+  }
+
   // Add swarm prompt to Claude's system prompt inside container
   if (cliType === 'claude' && agent) {
     const prompt = buildSwarmPrompt(swarmRole, agent, id, swarmApiUrl, undefined, undefined, functionalRole, pipeline, personaCtx);
     cliArgs.push('--append-system-prompt', prompt);
+  }
+
+  // Mount skill dir as read-only volume for Docker
+  if (skillDirPath) {
+    dockerArgs.push('-v', `${skillDirPath}:/home/agent/.swarm-skills:ro`);
+    cliArgs.push('--add-dir', '/home/agent/.swarm-skills');
   }
 
   dockerArgs.push('agent-swarm-sandbox:latest', cmd, ...cliArgs);
@@ -403,6 +435,7 @@ function spawnDockerSession(
     permissionMode,
     containerName,
     worktreeBranch: null,
+    skillDirPath,
     pty: ptyProcess,
     cols,
     rows,
@@ -436,6 +469,7 @@ export function killSession(sessionId: string): void {
     if (session.containerName) {
       try { execSync(`docker rm -f ${session.containerName}`, { stdio: 'ignore', timeout: 5000 }); } catch { /* already gone */ }
     }
+    cleanupSkillDir(sessionId);
     sessions.delete(sessionId);
   }
 }
@@ -449,6 +483,7 @@ export function killAll(): void {
     }
   }
   sessions.clear();
+  cleanupAllSkillDirs();
 }
 
 export function getSessionByAgentName(name: string, officeId?: string): PtySession | undefined {
