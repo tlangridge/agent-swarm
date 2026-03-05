@@ -69,5 +69,10 @@ export function useOffices() {
     return data;
   }, []);
 
-  return { offices, activeShifts, setActiveShifts, loading, fetchOffices, createOffice, updateOffice, deleteOffice, badgeIn, badgeOut };
+  const closeShift = useCallback(async (id: string) => {
+    const res = await fetch(`/api/offices/${id}/close-shift`, { method: 'POST' });
+    return res.json();
+  }, []);
+
+  return { offices, activeShifts, setActiveShifts, loading, fetchOffices, createOffice, updateOffice, deleteOffice, badgeIn, badgeOut, closeShift };
 }

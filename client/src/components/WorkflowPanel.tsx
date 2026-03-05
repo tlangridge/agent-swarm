@@ -64,24 +64,28 @@ export default function WorkflowPanel({ activeShift }: Props) {
 
   const isActive = activeShift && activeShift.status !== 'ended';
 
+  const officeId = activeShift?.officeId;
+
   const fetchCrons = useCallback(async () => {
+    if (!officeId) return;
     try {
-      const res = await fetch('/api/swarm/crons');
+      const res = await fetch(`/api/swarm/crons?officeId=${encodeURIComponent(officeId)}`);
       if (!res.ok) return;
       const data = await res.json();
       setCronJobs(data.cronJobs || []);
       setScheduler(data.scheduler || null);
     } catch { /* ignore */ }
-  }, []);
+  }, [officeId]);
 
   const fetchFiles = useCallback(async () => {
+    if (!officeId) return;
     try {
-      const res = await fetch('/api/swarm/files');
+      const res = await fetch(`/api/swarm/files?officeId=${encodeURIComponent(officeId)}`);
       if (!res.ok) return;
       const data: WorkspaceIndex = await res.json();
       setFiles(data.files || []);
     } catch { /* ignore */ }
-  }, []);
+  }, [officeId]);
 
   useEffect(() => {
     if (!isActive) return;

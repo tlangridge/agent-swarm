@@ -1,4 +1,5 @@
 import type { IPty } from 'node-pty';
+import { sessions } from '../pty-manager.js';
 
 const CHUNK_SIZE = 32;
 const CHUNK_DELAY = 12;     // ms between chunks
@@ -92,6 +93,9 @@ export function injectMessage(sessionId: string, text: string): Promise<void> {
     await writeChunked(current.pty, text);
     await delay(PRE_CR_DELAY);
     await sendCrWithInsurance(current.pty);
+    // Track message injection for context health monitoring
+    const sessionObj = sessions.get(sessionId);
+    if (sessionObj) sessionObj.messageInjectionCount++;
     await delay(POST_CR_SETTLE);
   });
 

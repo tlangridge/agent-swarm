@@ -67,6 +67,7 @@ export interface OfficeSlot {
   soul?: string;
   memory?: string;
   instructions?: string;
+  skills?: string[];
 }
 
 export interface CronJob {
@@ -94,12 +95,13 @@ export interface Office {
   soul?: string;
   memory?: string;
   instructions?: string;
+  nextShiftNumber?: number;
   createdAt: string;
   updatedAt: string;
 }
 
 export type ShiftSlotStatus = 'pending' | 'booting' | 'active' | 'failed' | 'ended';
-export type ShiftStatus = 'starting' | 'active' | 'review' | 'ending' | 'ended';
+export type ShiftStatus = 'starting' | 'active' | 'review' | 'closing' | 'ending' | 'ended';
 
 export interface ShiftSlotState {
   slotIndex: number;
@@ -120,6 +122,9 @@ export interface ShiftState {
   status: ShiftStatus;
   slots: ShiftSlotState[];
   reviewSummary?: string;
+  shiftNumber?: number;
+  closingStartedAt?: string;
+  closeDocPath?: string;
 }
 
 export interface TaskItem {
@@ -271,6 +276,7 @@ export interface WsSetRoleMsg {
 export interface WsSetProjectPathMsg {
   type: 'set-project-path';
   projectPath: string;
+  officeId?: string;
 }
 
 export interface WsInjectMsg {
@@ -352,4 +358,7 @@ export interface AgentStructuredStatus {
   taskElapsedSeconds?: number;
   circuitState: CircuitState;
   worktreeBranch?: string;
+  contextHealth: number;
+  compactionCount: number;
+  totalOutputKB: number;
 }

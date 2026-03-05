@@ -42,6 +42,8 @@ export default function App() {
   const [layouts, setLayouts] = useState<Map<string, MosaicNode<string> | null>>(new Map());
   const [focusedOfficeId, setFocusedOfficeId] = useState<string | null>(null);
   const focusedOfficeIdRef = useRef<string | null>(null);
+  const userClearedFocusRef = useRef(false);
+  const prevShiftKeysRef = useRef<string>('');
   const [sidebarWidth, setSidebarWidth] = useState(360);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -63,8 +65,8 @@ export default function App() {
 
   const { agents, agentmailConfigured, dockerAvailable, dockerImageBuilt, createAgent, updateAgent, deleteAgent, refresh } = useAgents();
   const { worktrees, isGitRepo, createWorktree, refresh: refreshWorktrees } = useWorktrees();
-  const { overview, loading: overviewLoading, error: overviewError, refreshNow: refreshOverview } = useWorktreeOverview(connected);
-  const { offices, activeShifts, setActiveShifts, fetchOffices, createOffice, updateOffice, deleteOffice, badgeIn, badgeOut } = useOffices();
+  const { overview, loading: overviewLoading, error: overviewError, refreshNow: refreshOverview } = useWorktreeOverview(connected, focusedOfficeId || undefined);
+  const { offices, activeShifts, setActiveShifts, fetchOffices, createOffice, updateOffice, deleteOffice, badgeIn, badgeOut, closeShift } = useOffices();
   const { officeId: routeOfficeId, setOfficeId: setRouteOfficeId } = useHashRoute();
   const { notifications, addNotification, markAllReadForOffice, unreadByOffice } = useNotifications();
   const { tasks, moveTask } = useTasks(connected, focusedOfficeId || selectedOfficeId || undefined);
@@ -72,6 +74,10 @@ export default function App() {
 
   // Derive the current office's shift from the shifts map
   const activeShift = focusedOfficeId ? activeShifts.get(focusedOfficeId) ?? null : null;
+
+  // Resolve effective project path: use focused office's path when available, else global
+  const focusedOffice = focusedOfficeId ? offices.find(o => o.id === focusedOfficeId) : null;
+  const effectiveProjectPath = focusedOffice?.projectPath || projectPath;
 
   // Filter sessions for the focused office
   // When no office is focused (browsing all offices), show empty so OfficeDashboard renders
@@ -150,6 +156,10 @@ export default function App() {
     }
   }, [badgeOut, focusedOfficeId, activeShifts]);
 
+  const handleCloseShift = useCallback(async (officeId: string) => {
+    await closeShift(officeId);
+  }, [closeShift]);
+
   // Keep ref in sync for use inside WS handler closure
   useEffect(() => {
     focusedOfficeIdRef.current = focusedOfficeId;
@@ -162,9 +172,18 @@ export default function App() {
     }
   }, [routeOfficeId]);
 
-  // Auto-focus first active shift only when shifts change (not on manual unfocus)
+  // Auto-focus first active shift only when a genuinely new shift appears
   useEffect(() => {
-    if (!focusedOfficeIdRef.current && activeShifts.size > 0) {
+    const currentKeys = [...activeShifts.keys()].sort().join(',');
+    const newShiftAppeared = currentKeys !== prevShiftKeysRef.current
+      && activeShifts.size > prevShiftKeysRef.current.split(',').filter(Boolean).length;
+    prevShiftKeysRef.current = currentKeys;
+
+    if (newShiftAppeared) {
+      userClearedFocusRef.current = false; // reset — a new shift started
+    }
+
+    if (!focusedOfficeIdRef.current && activeShifts.size > 0 && !userClearedFocusRef.current) {
       const firstShift = activeShifts.values().next().value;
       if (firstShift) {
         setFocusedOfficeId(firstShift.officeId);
@@ -456,6 +475,33 @@ export default function App() {
                 }
                 return next;
               });
+              // When a shift ends (e.g. after close timeout), clean up sessions/layouts/focus
+              if (shift.status === 'ended') {
+                const endedOfficeId = shift.officeId;
+                setSessions(prev => {
+                  const next = new Map(prev);
+                  for (const [id, session] of prev) {
+                    if (session.officeId === endedOfficeId) {
+                      next.delete(id);
+                      writersRef.current.delete(id);
+                      outputPreviewsRef.current.delete(id);
+                      lastActivityRef.current.delete(id);
+                    }
+                  }
+                  return next;
+                });
+                setLayouts(prev => {
+                  const next = new Map(prev);
+                  next.delete(endedOfficeId);
+                  return next;
+                });
+                if (focusedOfficeIdRef.current === endedOfficeId) {
+                  setFocusedSessionId(null);
+                  setFocusedOfficeId(null);
+                  setSelectedOfficeId(null);
+                  setRouteOfficeId(null);
+                }
+              }
             }
             break;
           }
@@ -502,6 +548,7 @@ export default function App() {
   }, [focusedOfficeId, activeShifts]);
 
   const handleSetProjectPath = useCallback(async (path: string) => {
+    const officeId = focusedOfficeIdRef.current || undefined;
     try {
       const res = await fetch('/api/project', {
         method: 'PUT',
@@ -510,26 +557,33 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok) {
-        setProjectPath(data.projectPath);
+        if (officeId) {
+          // Update the office's projectPath (persisted via WS handler)
+          sendWs({ type: 'set-project-path', projectPath: data.projectPath, officeId });
+          // Update local offices state so UI reflects the change immediately
+          fetchOffices();
+        } else {
+          setProjectPath(data.projectPath);
+          sendWs({ type: 'set-project-path', projectPath: data.projectPath });
+        }
         setProjectPathValid(true);
-        sendWs({ type: 'set-project-path', projectPath: data.projectPath });
       } else {
-        // Still update locally so user sees what they typed
-        setProjectPath(path);
+        if (!officeId) setProjectPath(path);
         setProjectPathValid(false);
       }
     } catch {
-      setProjectPath(path);
+      if (!officeId) setProjectPath(path);
       setProjectPathValid(false);
     }
-  }, [sendWs]);
+  }, [sendWs, fetchOffices]);
 
   const handlePickProjectPath = useCallback(async () => {
+    const officeId = focusedOfficeIdRef.current || undefined;
     setPickingProjectPath(true);
     try {
-      const res = await fetch('/api/project/pick', {
-        method: 'POST',
-      });
+      // Don't save globally when scoped to an office
+      const url = officeId ? '/api/project/pick?save=false' : '/api/project/pick';
+      const res = await fetch(url, { method: 'POST' });
       const data = await res.json();
 
       if (!res.ok) {
@@ -538,16 +592,21 @@ export default function App() {
       }
       if (data.cancelled) return;
       if (typeof data.projectPath === 'string') {
-        setProjectPath(data.projectPath);
+        if (officeId) {
+          sendWs({ type: 'set-project-path', projectPath: data.projectPath, officeId });
+          fetchOffices();
+        } else {
+          setProjectPath(data.projectPath);
+          sendWs({ type: 'set-project-path', projectPath: data.projectPath });
+        }
         setProjectPathValid(true);
-        sendWs({ type: 'set-project-path', projectPath: data.projectPath });
       }
     } catch (err) {
       console.error('Failed to pick project path:', err);
     } finally {
       setPickingProjectPath(false);
     }
-  }, [sendWs]);
+  }, [sendWs, fetchOffices]);
 
   const handleAddTerminal = useCallback((agent: AgentIdentity | null, cliType: CliType, executionMode: ExecutionMode = 'local', permissionMode: PermissionMode = 'autonomous', swarmRole: SwarmRole = 'worker', worktree: Worktree | null = null) => {
     setShowPicker(false);
@@ -809,10 +868,11 @@ export default function App() {
       <Header
         sessionCount={sessions.size}
         connected={connected}
-        projectPath={projectPath}
+        projectPath={effectiveProjectPath}
         projectPathValid={projectPathValid}
         pickingProjectPath={pickingProjectPath}
         workspaceMode={workspaceMode}
+        officeName={focusedOffice?.name}
         onAddTerminal={handleOpenPicker}
         onOpenSettings={() => setShowSettings(true)}
         onManageAgents={() => setView(view === 'agents' ? 'workspace' : 'agents')}
@@ -827,12 +887,15 @@ export default function App() {
           focusedOfficeId={focusedOfficeId}
           unreadByOffice={unreadByOffice}
           onFocusOffice={(id) => {
+            setFocusedSessionId(null);
             setFocusedOfficeId(id);
             setSelectedOfficeId(id);
             setRouteOfficeId(id);
             markAllReadForOffice(id);
           }}
           onBack={() => {
+            setFocusedSessionId(null);
+            userClearedFocusRef.current = true;
             setFocusedOfficeId(null);
             setSelectedOfficeId(null);
             setRouteOfficeId(null);
@@ -844,6 +907,7 @@ export default function App() {
         <ShiftStatusBar
           shift={activeShift}
           onBadgeOut={handleBadgeOut}
+          onCloseShift={handleCloseShift}
         />
       )}
 
@@ -1114,7 +1178,7 @@ export default function App() {
                 <div className="sidebar-tab-content">
                   {sidebarTab === 'worktrees' ? (
                     <WorktreeActivityPanel
-                      projectPath={projectPath}
+                      projectPath={effectiveProjectPath}
                       overview={overview}
                       loading={overviewLoading}
                       error={overviewError}

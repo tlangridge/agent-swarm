@@ -11,6 +11,7 @@ import { getProjectPath, setProjectPath } from './routes/project.js';
 import { registerSession, unregisterSession, injectMessage } from './services/pty-writer.js';
 import { schedulePersistState } from './services/session-persistence.js';
 import { handleSlotExit } from './services/shift-manager.js';
+import { onCompaction } from './services/context-monitor.js';
 
 type PermissionMode = 'autonomous' | 'regular';
 interface CreateMsg { type: 'create'; requestId?: string; agentId?: string; agentName?: string; agentEmail?: string; cliType: CliType; executionMode?: ExecutionMode; permissionMode?: PermissionMode; swarmRole?: SwarmRole; functionalRole?: FunctionalRole | null; projectPath?: string; cols: number; rows: number }
@@ -18,7 +19,7 @@ interface InputMsg { type: 'input'; sessionId: string; data: string }
 interface ResizeMsg { type: 'resize'; sessionId: string; cols: number; rows: number }
 interface KillMsg { type: 'kill'; sessionId: string }
 interface SetRoleMsg { type: 'set-role'; sessionId: string; role: SwarmRole }
-interface SetProjectPathMsg { type: 'set-project-path'; projectPath: string }
+interface SetProjectPathMsg { type: 'set-project-path'; projectPath: string; officeId?: string }
 interface InjectMsg { type: 'inject'; sessionId: string; text: string }
 interface SubscribeMsg { type: 'subscribe'; officeIds: string[] }
 
@@ -121,10 +122,18 @@ swarmEvents.on('member:role-changed', (member) => {
 
 function accumScrollback(session: PtySession, data: string): void {
   session.scrollback += data;
+  session.totalOutputBytes += data.length;
   if (session.scrollback.length > MAX_SCROLLBACK) {
     session.scrollback = session.scrollback.slice(-MAX_SCROLLBACK);
   }
   session.lastDataAt = new Date();
+
+  // Detect compaction events
+  if (/[Cc]ompacted/.test(data)) {
+    session.compactionCount++;
+    onCompaction(session.id, session.compactionCount);
+  }
+
   schedulePersistState();
 }
 
@@ -322,7 +331,19 @@ export function handleWebSocket(ws: WebSocket): void {
       }
 
       case 'set-project-path': {
-        setProjectPath(msg.projectPath);
+        if (msg.officeId) {
+          // Scope to office — update the office's projectPath (persists to disk)
+          const { getOffice, saveOffice } = await import('./services/office-store.js');
+          const office = await getOffice(msg.officeId);
+          if (office) {
+            office.projectPath = msg.projectPath;
+            office.updatedAt = new Date().toISOString();
+            await saveOffice(office);
+          }
+        } else {
+          // No office context — set the global path (for ad-hoc terminals)
+          setProjectPath(msg.projectPath);
+        }
         schedulePersistState();
         break;
       }

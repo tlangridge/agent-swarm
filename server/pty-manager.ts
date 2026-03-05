@@ -32,6 +32,9 @@ export interface PtySession {
   scrollback: string;
   createdAt: Date;
   lastDataAt: Date;
+  totalOutputBytes: number;
+  messageInjectionCount: number;
+  compactionCount: number;
 }
 
 export const MAX_SCROLLBACK = 100 * 1024; // 100KB per session
@@ -241,6 +244,9 @@ export function spawnSession(
     scrollback: '',
     createdAt: new Date(),
     lastDataAt: new Date(),
+    totalOutputBytes: 0,
+    messageInjectionCount: 0,
+    compactionCount: 0,
   };
 
   sessions.set(id, session);
@@ -403,6 +409,9 @@ function spawnDockerSession(
     scrollback: '',
     createdAt: new Date(),
     lastDataAt: new Date(),
+    totalOutputBytes: 0,
+    messageInjectionCount: 0,
+    compactionCount: 0,
   };
 
   sessions.set(id, session);
@@ -442,9 +451,10 @@ export function killAll(): void {
   sessions.clear();
 }
 
-export function getSessionByAgentName(name: string): PtySession | undefined {
+export function getSessionByAgentName(name: string, officeId?: string): PtySession | undefined {
   const lower = name.toLowerCase();
   for (const session of sessions.values()) {
+    if (officeId !== undefined && session.officeId !== officeId) continue;
     if (session.agentName?.toLowerCase() === lower) return session;
   }
   return undefined;

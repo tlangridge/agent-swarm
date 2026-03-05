@@ -1,8 +1,9 @@
 import { sessions } from '../pty-manager.js';
-import { getMembers } from './swarm-registry.js';
+import { getMembers, getMembersByOffice } from './swarm-registry.js';
 import type { SwarmRole, FunctionalRole, CircuitState } from './swarm-registry.js';
 import { listTasks } from './task-board.js';
 import { getActiveShift } from './shift-manager.js';
+import { computeContextHealth } from './context-monitor.js';
 
 export interface AgentStructuredStatus {
   agentName: string;
@@ -18,6 +19,9 @@ export interface AgentStructuredStatus {
   taskElapsedSeconds?: number;
   circuitState: CircuitState;
   worktreeBranch?: string;
+  contextHealth: number;
+  compactionCount: number;
+  totalOutputKB: number;
 }
 
 // Patterns to detect meaningful actions from cleaned terminal output
@@ -66,10 +70,10 @@ export function extractRecentFiles(scrollback: string, maxFiles = 5): string[] {
   return Array.from(files).slice(-maxFiles);
 }
 
-export async function getStructuredStatus(): Promise<AgentStructuredStatus[]> {
-  const members = getMembers();
-  const shift = getActiveShift();
-  const officeId = shift?.officeId;
+export async function getStructuredStatus(scopeOfficeId?: string): Promise<AgentStructuredStatus[]> {
+  const members = scopeOfficeId ? getMembersByOffice(scopeOfficeId) : getMembers();
+  const officeId = scopeOfficeId || getActiveShift()?.officeId;
+  const shift = officeId ? getActiveShift(officeId) : getActiveShift();
   const allTasks = await listTasks(officeId ? { officeId } : undefined);
   const result: AgentStructuredStatus[] = [];
 
@@ -117,6 +121,9 @@ export async function getStructuredStatus(): Promise<AgentStructuredStatus[]> {
       taskElapsedSeconds,
       circuitState: member.circuitState,
       worktreeBranch: slotState?.worktreeBranch || session?.worktreeBranch || undefined,
+      contextHealth: computeContextHealth(member.sessionId),
+      compactionCount: session?.compactionCount ?? 0,
+      totalOutputKB: Math.round((session?.totalOutputBytes ?? 0) / 1024),
     });
   }
 

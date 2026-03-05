@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { nanoid } from 'nanoid';
 import { getMember, getMembers } from '../services/swarm-registry.js';
 import type { FunctionalRole } from '../services/swarm-registry.js';
@@ -41,12 +41,18 @@ function resolveTargets(job: CronJob): string[] {
 }
 
 /**
- * Helper to get the active office from the current shift.
+ * Resolve office from query param, sender header, or active shift.
  */
-async function getActiveOffice() {
+async function getActiveOffice(req: Request) {
+  const qId = req.query.officeId as string | undefined;
+  if (qId) return getOffice(qId);
+  const sessionId = req.headers['x-session-id'] as string | undefined;
+  if (sessionId) {
+    const member = getMember(sessionId);
+    if (member?.officeId) return getOffice(member.officeId);
+  }
   const shift = getActiveShift();
-  if (!shift) return null;
-  return getOffice(shift.officeId);
+  return shift ? getOffice(shift.officeId) : null;
 }
 
 /**
@@ -57,8 +63,8 @@ function triggerReload(office: Parameters<typeof reloadScheduler>[0]) {
 }
 
 // GET / — List cron jobs for the active office
-cronRoutes.get('/', async (_req, res) => {
-  const office = await getActiveOffice();
+cronRoutes.get('/', async (req, res) => {
+  const office = await getActiveOffice(req);
   if (!office) {
     return res.json({ cronJobs: [], scheduler: { running: false, jobs: [] } });
   }
@@ -75,7 +81,7 @@ cronRoutes.post('/', async (req, res) => {
   // Allow user-created jobs (no session ID) or agent-created jobs (valid session)
   const createdBy = member?.agentName ?? 'user';
 
-  const office = await getActiveOffice();
+  const office = await getActiveOffice(req);
   if (!office) {
     return res.status(400).json({ error: 'No active shift. Badge in first.' });
   }
@@ -128,7 +134,7 @@ cronRoutes.put('/:id', async (req, res) => {
     return res.status(401).json({ error: 'Invalid X-Session-Id header' });
   }
 
-  const office = await getActiveOffice();
+  const office = await getActiveOffice(req);
   if (!office) {
     return res.status(400).json({ error: 'No active shift. Badge in first.' });
   }
@@ -169,7 +175,7 @@ cronRoutes.delete('/:id', async (req, res) => {
     return res.status(401).json({ error: 'Invalid X-Session-Id header' });
   }
 
-  const office = await getActiveOffice();
+  const office = await getActiveOffice(req);
   if (!office) {
     return res.status(400).json({ error: 'No active shift. Badge in first.' });
   }
@@ -197,7 +203,7 @@ cronRoutes.post('/:id/toggle', async (req, res) => {
     return res.status(401).json({ error: 'Invalid X-Session-Id header' });
   }
 
-  const office = await getActiveOffice();
+  const office = await getActiveOffice(req);
   if (!office) {
     return res.status(400).json({ error: 'No active shift. Badge in first.' });
   }

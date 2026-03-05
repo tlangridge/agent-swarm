@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -25,6 +26,7 @@ export interface OfficeSlot {
   soul?: string;
   memory?: string;
   instructions?: string;
+  skills?: string[];
 }
 
 export interface CronJob {
@@ -52,6 +54,7 @@ export interface Office {
   soul?: string;
   memory?: string;
   instructions?: string;
+  nextShiftNumber?: number;                    // incremented on shift close
   createdAt: string;
   updatedAt: string;
 }
@@ -83,8 +86,12 @@ export async function listOffices(): Promise<Office[]> {
   const offices: Office[] = [];
   for (const f of files) {
     if (!f.endsWith('.json')) continue;
-    const data = await fs.readFile(path.join(OFFICES_DIR, f), 'utf-8');
-    offices.push(JSON.parse(data));
+    try {
+      const data = await fs.readFile(path.join(OFFICES_DIR, f), 'utf-8');
+      offices.push(JSON.parse(data));
+    } catch (err) {
+      console.error(`office-store: failed to parse ${f}, skipping:`, err);
+    }
   }
   return offices.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -98,12 +105,29 @@ export async function getOffice(id: string): Promise<Office | null> {
   }
 }
 
+// Per-office write mutex — serializes concurrent saves to the same office file
+const writeLocks = new Map<string, Promise<void>>();
+
 export async function saveOffice(office: Office): Promise<void> {
-  await ensureDir();
-  await fs.writeFile(
-    path.join(OFFICES_DIR, `${office.id}.json`),
-    JSON.stringify(office, null, 2),
-  );
+  const id = office.id;
+  const prev = writeLocks.get(id) ?? Promise.resolve();
+  let resolve!: () => void;
+  let reject!: (err: unknown) => void;
+  const gate = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+  writeLocks.set(id, gate);
+
+  await prev;
+  try {
+    await ensureDir();
+    const filePath = path.join(OFFICES_DIR, `${id}.json`);
+    const tmpPath = filePath + `.${randomUUID()}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify(office, null, 2));
+    await fs.rename(tmpPath, filePath);
+    resolve();
+  } catch (err) {
+    reject(err);
+    throw err;
+  }
 }
 
 export async function deleteOffice(id: string): Promise<boolean> {

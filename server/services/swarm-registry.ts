@@ -84,16 +84,18 @@ export function getMembers(): SwarmMember[] {
   return Array.from(members.values());
 }
 
-export function getLeadSessionId(): string | null {
+export function getLeadSessionId(officeId?: string): string | null {
   for (const [id, m] of members) {
+    if (officeId !== undefined && m.officeId !== officeId) continue;
     if (m.role === 'lead') return id;
   }
   return null;
 }
 
-export function getMemberByName(name: string): SwarmMember | undefined {
+export function getMemberByName(name: string, officeId?: string): SwarmMember | undefined {
   const lower = name.toLowerCase();
   for (const m of members.values()) {
+    if (officeId !== undefined && m.officeId !== officeId) continue;
     if (m.agentName?.toLowerCase() === lower) return m;
   }
   return undefined;

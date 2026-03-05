@@ -549,6 +549,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 .worktree-panel-header {
   display: flex;
@@ -611,6 +612,7 @@ body {
   border-radius: 8px;
   background: #1a1b26;
   overflow: hidden;
+  flex-shrink: 0;
 }
 .worktree-card-header {
   width: 100%;
@@ -1004,6 +1006,26 @@ body {
 .shift-end-btn {
   margin-left: 12px;
   flex-shrink: 0;
+}
+.shift-close-btn {
+  background: #7aa2f7 !important;
+  border-color: #7aa2f7 !important;
+}
+.shift-close-btn:hover {
+  background: #89b4fa !important;
+  border-color: #89b4fa !important;
+}
+.shift-closing-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #c0caf5;
+}
+.shift-closing-countdown {
+  font-variant-numeric: tabular-nums;
+  color: #e0af68;
+  font-weight: 600;
 }
 
 /* ======== Roster Editor Modal ======== */

@@ -1,5 +1,6 @@
 import type { SwarmRole, FunctionalRole } from './swarm-registry.js';
 import type { PipelineStage } from './office-store.js';
+import { ROLE_SKILLS } from './skill-installer.js';
 
 interface AgentInfo {
   name: string;
@@ -88,8 +89,32 @@ When creating tasks, ALWAYS include:
 - \`--depends id1,id2\` if this task requires another task to finish first
 - \`--assign\` to a specific agent when possible
 When marking tasks done, include \`--output "summary of what was produced"\` so downstream tasks receive context.
+
+CONTEXT WINDOW MANAGEMENT (CRITICAL):
+Your context window is your most precious resource. As lead, you must survive the entire
+shift — if you run out of context, the team loses coordination.
+
+NEVER do implementation work directly. Your job is to:
+- Read task reports and swarm messages (small, focused reads)
+- Make decisions and course-correct
+- Create and assign tasks
+- Monitor progress via \`swarm activity\` and \`swarm tasks\`
+
+If you need to investigate something technical (read code, run a command, check a file):
+ALWAYS spawn a subagent (Claude Code's Task tool) to do it and report back.
+Never read files, search code, or run builds in your main context.
+
+Your value is 100% coordination. The moment you start doing hands-on work,
+you compromise the entire team's ability to function.
 ${workContext}
 Use the \`swarm\` CLI for all team coordination. Run \`swarm help\` for available commands.
+
+=== SWARM FEEDBACK ===
+If you encounter bugs, friction, or have feature ideas for the swarm system itself
+(broken commands, missing capabilities, confusing behavior, workflow improvements),
+log them so the team can improve:
+  swarm append bugs.md --content "[BUG/FEATURE] <title>\\nDetails: <what happened, what you expected, suggestion>"
+This is for swarm system issues only — not project bugs. Project bugs go through normal task workflow.
 
 Incoming messages appear as: [SWARM from <name>]: <message>
 Respond naturally, then message back if needed via \`swarm msg <name> <reply>\`.
@@ -122,8 +147,47 @@ Workflow:
 12. Mark complete: \`swarm task done <id> --output "summary of what was done"\`
 13. If blocked/failing: \`swarm task fail <id> reason\`
 14. Check for next task
+
+CONTEXT WINDOW MANAGEMENT (CRITICAL):
+Your context window is your most precious and non-renewable resource. Once it degrades,
+you become ineffective and will be rotated out. Follow these rules strictly:
+
+ALWAYS use subagents (Claude Code's Task tool) for:
+- Reading files: Never \`cat\` or Read files in your main context. Spawn a subagent to read
+  and summarize what you need.
+- Searching code: Never grep/glob in your main context. Have a subagent search and report
+  back with specific findings.
+- Writing/editing code: Give a subagent clear specs (file path, what to change, acceptance
+  criteria) and let it do the implementation. Review the diff, don't write it yourself.
+- Running tests/builds: Spawn a subagent to run commands and report results.
+- Exploring unfamiliar code: Have a subagent read a module and summarize its API, patterns,
+  and relevant details.
+
+KEEP in your main context ONLY:
+- Task understanding and planning (what needs to be done and why)
+- Reviewing subagent results (diffs, test output summaries)
+- Swarm coordination (messages, task updates, context docs)
+- Decision-making and course-correction
+
+PATTERN — for every task, follow this cycle:
+1. Read the task assignment and plan your approach (main context)
+2. Spawn subagent: "Read files X, Y, Z and tell me [specific question]" (subagent)
+3. Review findings and decide on implementation approach (main context)
+4. Spawn subagent: "Edit file X to [specific change with clear specs]" (subagent)
+5. Spawn subagent: "Run tests and report pass/fail" (subagent)
+6. Review results, mark task done or iterate (main context)
+
+If you find yourself reading large files, writing multi-line code, or running commands
+directly — STOP. You should be delegating that to a subagent.
 ${workContext}
 Use the \`swarm\` CLI for all team coordination. Run \`swarm help\` for commands.
+
+=== SWARM FEEDBACK ===
+If you encounter bugs, friction, or have feature ideas for the swarm system itself
+(broken commands, missing capabilities, confusing behavior, workflow improvements),
+log them so the team can improve:
+  swarm append bugs.md --content "[BUG/FEATURE] <title>\\nDetails: <what happened, what you expected, suggestion>"
+This is for swarm system issues only — not project bugs. Project bugs go through normal task workflow.
 
 Incoming messages appear as: [SWARM from <name>]: <message>
 Respond naturally, then message back if needed via \`swarm msg <name> <reply>\`.
@@ -260,6 +324,19 @@ export function buildFunctionalRolePrompt(
     prompt += '\nMove work through the pipeline by completing your stage and handing off to the next.';
   }
 
+  // Skills awareness
+  const roleSkills = ROLE_SKILLS[functionalRole];
+  if (roleSkills && roleSkills.length > 0) {
+    prompt += '\n\n=== YOUR SKILLS ===\n';
+    prompt += 'You have specialized skills available. Invoke them when your work requires it:\n';
+    for (const s of roleSkills) {
+      prompt += `  - /${s.skill} — Use when ${s.when}\n`;
+    }
+  }
+  if (['designer', 'product-manager', 'developer'].includes(functionalRole)) {
+    prompt += '\n\nIMPORTANT: When writing ANY user-facing copy, always use the /humanizer skill to remove AI-sounding patterns from the text before finalizing.';
+  }
+
   return prompt;
 }
 
@@ -300,6 +377,12 @@ export function buildOrientationMessage(
     lines.push('', ROLE_PROMPTS[functionalRole]);
   }
 
+  // Skills guidance for non-Claude agents
+  const orientSkills = functionalRole ? ROLE_SKILLS[functionalRole] : undefined;
+  if (orientSkills && orientSkills.length > 0) {
+    lines.push('', 'You have specialized skills available. To discover more: `npx skills find <query>`');
+  }
+
   if (projectPath) {
     lines.push(`Working directory: ${projectPath}`);
     if (worktreeBranch) {
@@ -336,6 +419,7 @@ export function buildOrientationMessage(
     '  swarm task pick <id>  — Self-assign and start a task',
     '  swarm task done <id>  — Mark task complete',
     '  swarm context         — Read workspace context',
+    '  swarm append bugs.md  — Report swarm system bugs or feature requests',
     '',
     'Incoming messages appear as: [SWARM from <name>]: <message>',
     '===========================',

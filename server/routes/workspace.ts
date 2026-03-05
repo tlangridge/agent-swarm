@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { getMember } from '../services/swarm-registry.js';
 import { getActiveShift } from '../services/shift-manager.js';
 import { listFiles, readFile, writeFile, appendFile, deleteFile } from '../services/workspace-files.js';
@@ -6,18 +6,23 @@ import { listFiles, readFile, writeFile, appendFile, deleteFile } from '../servi
 export const workspaceRoutes = Router();
 
 /**
- * Resolve the active office ID from the current shift.
- * Returns null if no shift is active.
+ * Resolve office ID from query param, sender header, or active shift.
  */
-function getOfficeId(): string | null {
+function getOfficeId(req: Request): string | null {
+  const qId = req.query.officeId as string | undefined;
+  if (qId) return qId;
+  const sessionId = req.headers['x-session-id'] as string | undefined;
+  if (sessionId) {
+    const member = getMember(sessionId);
+    if (member?.officeId) return member.officeId;
+  }
   const shift = getActiveShift();
-  if (!shift) return null;
-  return shift.officeId;
+  return shift?.officeId ?? null;
 }
 
 // GET /api/swarm/files — List all workspace files for the active office
-workspaceRoutes.get('/', async (_req, res) => {
-  const officeId = getOfficeId();
+workspaceRoutes.get('/', async (req, res) => {
+  const officeId = getOfficeId(req);
   if (!officeId) {
     return res.status(400).json({ error: 'No active shift' });
   }
@@ -28,7 +33,7 @@ workspaceRoutes.get('/', async (_req, res) => {
 
 // GET /api/swarm/files/:path — Read a workspace file
 workspaceRoutes.get('/{*path}', async (req, res) => {
-  const officeId = getOfficeId();
+  const officeId = getOfficeId(req);
   if (!officeId) {
     return res.status(400).json({ error: 'No active shift' });
   }
@@ -54,7 +59,7 @@ workspaceRoutes.post('/{*path}', async (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
-  const officeId = getOfficeId();
+  const officeId = getOfficeId(req);
   if (!officeId) {
     return res.status(400).json({ error: 'No active shift' });
   }
@@ -89,7 +94,7 @@ workspaceRoutes.put('/{*path}', async (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
-  const officeId = getOfficeId();
+  const officeId = getOfficeId(req);
   if (!officeId) {
     return res.status(400).json({ error: 'No active shift' });
   }
@@ -124,7 +129,7 @@ workspaceRoutes.delete('/{*path}', async (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
-  const officeId = getOfficeId();
+  const officeId = getOfficeId(req);
   if (!officeId) {
     return res.status(400).json({ error: 'No active shift' });
   }

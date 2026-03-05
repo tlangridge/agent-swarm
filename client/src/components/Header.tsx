@@ -7,6 +7,7 @@ interface HeaderProps {
   projectPathValid: boolean | null;
   pickingProjectPath: boolean;
   workspaceMode?: 'dashboard' | 'grid';
+  officeName?: string;
   onAddTerminal: () => void;
   onOpenSettings: () => void;
   onManageAgents: () => void;
@@ -28,6 +29,7 @@ export default function Header({
   onPickProjectPath,
   workspaceMode,
   onToggleWorkspaceMode,
+  officeName,
 }: HeaderProps) {
   const [editing, setEditing] = useState(false);
   const [inputValue, setInputValue] = useState(projectPath);
@@ -73,6 +75,9 @@ export default function Header({
       </div>
 
       <div className="header-center">
+        {officeName && (
+          <span className="header-office-label" style={{ fontSize: 11, color: '#7aa2f7', marginRight: 8, whiteSpace: 'nowrap' }}>{officeName}</span>
+        )}
         <div className="project-path-display">
           {editing ? (
             <input

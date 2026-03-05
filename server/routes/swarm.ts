@@ -11,7 +11,7 @@ import { buildOrientationMessage } from '../services/swarm-prompts.js';
 import { getProjectPath } from './project.js';
 import { injectMessage } from '../services/pty-writer.js';
 import { getStructuredStatus } from '../services/activity-parser.js';
-import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand } from '../services/shift-manager.js';
+import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand, rotateAgent } from '../services/shift-manager.js';
 
 export const swarmRoutes = Router();
 
@@ -50,7 +50,8 @@ swarmRoutes.get('/activity/:name', (req, res) => {
     return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
   }
 
-  const session = getSessionByAgentName(req.params.name);
+  const activitySender = getMember(senderSessionId)!;
+  const session = getSessionByAgentName(req.params.name, activitySender.officeId || undefined);
   if (!session) {
     return res.status(404).json({ error: `Agent '${req.params.name}' not found or not active` });
   }
@@ -74,8 +75,12 @@ swarmRoutes.get('/activity/:name', (req, res) => {
 });
 
 // GET /api/swarm/dashboard — Structured agent status for lead/dashboard
-swarmRoutes.get('/dashboard', async (_req, res) => {
-  const agents = await getStructuredStatus();
+swarmRoutes.get('/dashboard', async (req, res) => {
+  const sessionId = req.headers['x-session-id'] as string | undefined;
+  const member = sessionId ? getMember(sessionId) : undefined;
+  const officeId = (req.query.officeId as string | undefined) || member?.officeId;
+
+  const agents = await getStructuredStatus(officeId);
   res.json({ agents, generatedAt: new Date().toISOString() });
 });
 
@@ -113,8 +118,13 @@ swarmRoutes.post('/summon', async (req, res) => {
 });
 
 // GET /api/swarm/agents — List active swarm members + available (inactive) agents
-swarmRoutes.get('/agents', async (_req, res) => {
-  const active = getMembers();
+swarmRoutes.get('/agents', async (req, res) => {
+  // Scope by office when caller provides X-Session-Id
+  const sessionId = req.headers['x-session-id'] as string | undefined;
+  const member = sessionId ? getMember(sessionId) : undefined;
+  const officeId = (req.query.officeId as string | undefined) || member?.officeId;
+
+  const active = officeId ? getMembersByOffice(officeId) : getMembers();
   const activeAgentIds = new Set(active.map(m => m.agentId).filter(Boolean));
 
   const allAgents = await listAgents();
@@ -123,7 +133,7 @@ swarmRoutes.get('/agents', async (_req, res) => {
   res.json({
     active,
     available: available.map(a => ({ id: a.id, name: a.name, email: a.email })),
-    leadSessionId: getLeadSessionId(),
+    leadSessionId: getLeadSessionId(officeId),
   });
 });
 
@@ -139,12 +149,11 @@ swarmRoutes.post('/message', (req, res) => {
     return res.status(400).json({ error: "Missing 'to' or 'message' field" });
   }
 
-  const target = getMemberByName(to);
+  const sender = getMember(senderSessionId)!;
+  const target = getMemberByName(to, sender.officeId || undefined);
   if (!target) {
     return res.status(404).json({ error: `Agent '${to}' not found in swarm` });
   }
-
-  const sender = getMember(senderSessionId)!;
   const session = sessions.get(target.sessionId);
   if (!session) {
     return res.status(404).json({ error: `Session for agent '${to}' no longer active` });
@@ -206,8 +215,9 @@ swarmRoutes.post('/spawn', async (req, res) => {
     return res.status(400).json({ error: `Maximum agent limit reached (${MAX_AGENTS} agents)`, currentCount: sessions.size });
   }
 
-  // Reject if already running
-  if (getMemberByName(name)) {
+  // Reject if already running in this office
+  const spawnSender = getMember(senderSessionId)!;
+  if (getMemberByName(name, spawnSender.officeId || undefined)) {
     return res.status(400).json({ error: `Agent '${name}' is already running in the swarm` });
   }
 
@@ -327,4 +337,19 @@ swarmRoutes.post('/spawn', async (req, res) => {
     console.error('Spawn route error:', message);
     return res.status(500).json({ error: `Failed to spawn agent: ${message}` });
   }
+});
+
+// POST /api/swarm/rotate/:name — Rotate agent (context refresh)
+swarmRoutes.post('/rotate/:name', async (req, res) => {
+  const senderSessionId = req.headers['x-session-id'] as string;
+  if (!senderSessionId || !getMember(senderSessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+  const sender = getMember(senderSessionId)!;
+  const target = getMemberByName(req.params.name, sender.officeId || undefined);
+  if (!target) {
+    return res.status(404).json({ error: `Agent '${req.params.name}' not found` });
+  }
+  rotateAgent(target.sessionId, req.body.reason || 'Manual rotation requested');
+  res.json({ rotating: true, agent: req.params.name });
 });

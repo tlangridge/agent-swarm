@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WorktreeOverviewResponse } from '../types';
 
-export function useWorktreeOverview(enabled = true) {
+export function useWorktreeOverview(enabled = true, officeId?: string) {
   const [overview, setOverview] = useState<WorktreeOverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -13,7 +13,10 @@ export function useWorktreeOverview(enabled = true) {
     inFlightRef.current = true;
 
     try {
-      const res = await fetch('/api/worktrees/overview');
+      const url = officeId
+        ? `/api/worktrees/overview?officeId=${encodeURIComponent(officeId)}`
+        : '/api/worktrees/overview';
+      const res = await fetch(url);
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
         throw new Error(`Worktree overview returned non-JSON (${res.status}). Check backend port/proxy configuration.`);
@@ -36,7 +39,7 @@ export function useWorktreeOverview(enabled = true) {
       }
       inFlightRef.current = false;
     }
-  }, [enabled]);
+  }, [enabled, officeId]);
 
   useEffect(() => {
     if (!enabled) return;

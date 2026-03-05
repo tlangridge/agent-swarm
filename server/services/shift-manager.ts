@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { nanoid } from 'nanoid';
 import type { Office, OfficeSlot, PipelineStage } from './office-store.js';
-import { getOffice } from './office-store.js';
+import { getOffice, saveOffice } from './office-store.js';
 import { fireWebhook } from './webhooks.js';
 import type { FunctionalRole, SwarmRole } from './swarm-registry.js';
 import { addMember, removeMember, getMemberByName, getMembers, getMembersByOffice, swarmEvents } from './swarm-registry.js';
@@ -15,9 +15,13 @@ import { injectMessage } from './pty-writer.js';
 import { startScheduler, stopScheduler } from './cron-scheduler.js';
 import { getProjectPath } from '../routes/project.js';
 import { isGitRepo, createWorktree, removeWorktree } from './worktree.js';
+import { startContextMonitor, stopContextMonitor } from './context-monitor.js';
+import { listFiles, readFile, writeFile } from './workspace-files.js';
+import { listTasks } from './task-board.js';
+import type { TaskItem } from './task-board.js';
 
 export type ShiftSlotStatus = 'pending' | 'booting' | 'active' | 'failed' | 'ended';
-export type ShiftStatus = 'starting' | 'active' | 'review' | 'ending' | 'ended';
+export type ShiftStatus = 'starting' | 'active' | 'review' | 'closing' | 'ending' | 'ended';
 
 export interface ShiftSlotState {
   slotIndex: number;
@@ -39,6 +43,10 @@ export interface ShiftState {
   status: ShiftStatus;
   slots: ShiftSlotState[];
   reviewSummary?: string;
+  shiftNumber?: number;
+  closingStartedAt?: string;
+  closeDocPath?: string;
+  closeTimeout?: ReturnType<typeof setTimeout>;
 }
 
 const activeShifts = new Map<string, ShiftState>();
@@ -76,6 +84,109 @@ function emitShiftStatus(shift: ShiftState): void {
   swarmEvents.emit('shift:status', { shift });
 }
 
+async function generateCloseDocument(shift: ShiftState, office: Office): Promise<string> {
+  const now = new Date();
+  const startedAt = new Date(shift.startedAt);
+  const durationMs = now.getTime() - startedAt.getTime();
+  const durationMin = Math.round(durationMs / 60_000);
+  const hours = Math.floor(durationMin / 60);
+  const mins = durationMin % 60;
+  const durationStr = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+
+  const lines: string[] = [
+    `# Shift #${shift.shiftNumber} Close Report`,
+    '',
+    `- **Office**: ${office.name}`,
+    `- **Shift Number**: ${shift.shiftNumber}`,
+    `- **Started**: ${shift.startedAt}`,
+    `- **Closed**: ${now.toISOString()}`,
+    `- **Duration**: ${durationStr}`,
+    '',
+  ];
+
+  // Team Roster table
+  lines.push('## Team Roster', '');
+  lines.push('| Agent | Role | Status | Worktree Branch |');
+  lines.push('|-------|------|--------|-----------------|');
+  for (const slot of shift.slots) {
+    const branch = slot.worktreeBranch || '-';
+    lines.push(`| ${slot.name} | ${slot.functionalRole} | ${slot.status} | ${branch} |`);
+  }
+  lines.push('');
+
+  // Task Summary grouped by status
+  const tasks = await listTasks({ officeId: shift.officeId });
+  const grouped: Record<string, TaskItem[]> = { done: [], 'in-progress': [], open: [], blocked: [] };
+  for (const t of tasks) {
+    if (grouped[t.status]) {
+      grouped[t.status].push(t);
+    } else {
+      grouped[t.status] = [t];
+    }
+  }
+
+  lines.push('## Task Summary', '');
+  for (const status of ['done', 'in-progress', 'open', 'blocked']) {
+    const group = grouped[status];
+    if (!group || group.length === 0) continue;
+    lines.push(`### ${status} (${group.length})`, '');
+    for (const t of group) {
+      const assignee = t.assignedTo || 'unassigned';
+      const output = t.output ? ` — ${t.output}` : '';
+      lines.push(`- **${t.id}** ${t.title} (${assignee})${output}`);
+    }
+    lines.push('');
+  }
+
+  // Worktree Branches
+  const worktreeSlots = shift.slots.filter(s => s.worktreeBranch);
+  if (worktreeSlots.length > 0) {
+    lines.push('## Worktree Branches', '');
+    for (const s of worktreeSlots) {
+      lines.push(`- ${s.name}: \`${s.worktreeBranch}\``);
+    }
+    lines.push('');
+  }
+
+  lines.push('---', '');
+  lines.push('## Agent Reports', '');
+  lines.push('_Agents: append your shift notes below._', '');
+
+  return lines.join('\n');
+}
+
+export async function getLastCloseDocument(officeId: string): Promise<{ content: string; shiftNumber: number; path: string } | null> {
+  const index = await listFiles(officeId);
+  const closeFiles = index.files.filter(f => /^shifts\/shift-\d+-close\.md$/.test(f.path));
+
+  if (closeFiles.length === 0) return null;
+
+  // Sort by shift number extracted from filename (descending), pick highest
+  closeFiles.sort((a, b) => {
+    const numA = parseInt(a.path.match(/shift-(\d+)-close/)![1], 10);
+    const numB = parseInt(b.path.match(/shift-(\d+)-close/)![1], 10);
+    return numB - numA;
+  });
+
+  const latest = closeFiles[0];
+  const shiftNumber = parseInt(latest.path.match(/shift-(\d+)-close/)![1], 10);
+
+  const result = await readFile(officeId, latest.path);
+  if (!result) return null;
+
+  let content = result.content;
+
+  // If content is too long, truncate the Agent Reports section
+  if (content.length > 4000) {
+    const agentReportsIdx = content.indexOf('## Agent Reports');
+    if (agentReportsIdx !== -1) {
+      content = content.slice(0, agentReportsIdx) + '## Agent Reports\n\n_[Truncated — see full report in workspace]_\n';
+    }
+  }
+
+  return { content, shiftNumber, path: latest.path };
+}
+
 export async function badgeIn(office: Office, broadcast: (data: unknown) => void): Promise<ShiftState> {
   const existing = activeShifts.get(office.id);
   if (existing && existing.status !== 'ended') {
@@ -96,6 +207,8 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
   };
   activeShifts.set(office.id, shift);
   emitShiftStatus(shift);
+
+  const lastClose = await getLastCloseDocument(office.id);
 
   const projectPath = office.projectPath || getProjectPath() || undefined;
   const allAgents = await listAgents();
@@ -122,7 +235,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
     }
 
     // Skip if already running (verify session actually exists, not just stale registry)
-    const existingMember = getMemberByName(slot.name);
+    const existingMember = getMemberByName(slot.name, office.id);
     if (existingMember && sessions.has(existingMember.sessionId)) {
       slotState.status = 'failed';
       slotState.error = `Agent "${slot.name}" is already running`;
@@ -283,9 +396,12 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
   emitShiftStatus(shift);
   fireWebhook('shift:started', { officeId: office.id, officeName: office.name, agentCount: shift.slots.filter(s => s.status === 'active').length });
 
+  // Start context health monitoring
+  startContextMonitor(office.id);
+
   // Start cron scheduler
   const resolveTargets = (job: { targetAgent?: string; targetRole?: FunctionalRole }) => {
-    const members = getMembers();
+    const members = getMembersByOffice(office.id);
     const ids: string[] = [];
     if (job.targetAgent) {
       const lower = job.targetAgent.toLowerCase();
@@ -333,6 +449,15 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       kickoffParts.push(`\nPipeline stages:\n${pipelineList}`);
     }
 
+    // Previous shift close report
+    if (lastClose) {
+      kickoffParts.push(
+        `\n=== PREVIOUS SHIFT (#${lastClose.shiftNumber}) CLOSE REPORT ===`,
+        lastClose.content,
+        '=== END PREVIOUS SHIFT REPORT ===',
+      );
+    }
+
     // Instructions
     kickoffParts.push(
       '\nUse the `swarm` CLI for team coordination. Run `swarm help` for available commands.',
@@ -340,6 +465,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       '1. Read existing context: `swarm context`',
       '2. Check current tasks: `swarm tasks`',
       '3. If no tasks exist, wait for the user\'s mission, then break it into tasks and assign them.',
+      '4. Set up a PM check-in: `swarm cron create --name "PM Check-In" --schedule "every 10m" --target-role product-manager --prompt "Check task board with swarm tasks. Review progress, identify blocked tasks, and message the lead with a brief status update. Flag any stale or stuck agents."`',
     );
 
     const kickoff = kickoffParts.join('\n');
@@ -350,7 +476,7 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
   // Send "stand by" message to ALL worker agents so they don't start working prematurely
   const workerSlots = shift.slots.filter((s, i) => s.status === 'active' && s.sessionId && i !== effectiveLeadIndex);
   if (workerSlots.length > 0) {
-    const standbyMsg = [
+    const standbyParts = [
       '[SWARM SYSTEM]: Shift started. You are a worker agent.',
       'STAND BY — do NOT start any work yet.',
       'The lead is setting up the mission and will assign you tasks shortly.',
@@ -359,7 +485,11 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
       '  2. Run `swarm context` to read the workspace context',
       '  3. If you have no tasks, WAIT for a message from the lead.',
       'Do NOT explore the codebase, write code, or take any action until you have a task.',
-    ].join('\n');
+    ];
+    if (lastClose) {
+      standbyParts.push(`Previous shift (#${lastClose.shiftNumber}) close report is available. Run: swarm read ${lastClose.path}`);
+    }
+    const standbyMsg = standbyParts.join('\n');
     const standbyTimer = setTimeout(() => {
       for (const slot of workerSlots) {
         injectMessage(slot.sessionId!, standbyMsg);
@@ -378,8 +508,14 @@ export async function badgeOut(officeId: string): Promise<ShiftState | null> {
   const shift = activeShifts.get(officeId);
   if (!shift) return null;
 
+  if (shift.closeTimeout) {
+    clearTimeout(shift.closeTimeout);
+    shift.closeTimeout = undefined;
+  }
+
   stopScheduler(officeId);
   stopIdleMonitor(officeId);
+  stopContextMonitor(officeId);
   shift.status = 'ending';
   emitShiftStatus(shift);
 
@@ -426,9 +562,64 @@ export async function badgeOut(officeId: string): Promise<ShiftState | null> {
   return shift;
 }
 
+export async function closeShift(officeId: string): Promise<{ closing: boolean; shiftNumber: number; closeDocPath: string }> {
+  const shift = activeShifts.get(officeId);
+  if (!shift || (shift.status !== 'active' && shift.status !== 'review')) {
+    throw new Error('No active shift to close');
+  }
+
+  const office = await getOffice(officeId);
+  if (!office) throw new Error('Office not found');
+
+  // Increment shift number
+  const shiftNumber = (office.nextShiftNumber ?? 1);
+  office.nextShiftNumber = shiftNumber + 1;
+  office.updatedAt = new Date().toISOString();
+  await saveOffice(office);
+
+  // Update shift state
+  shift.status = 'closing';
+  shift.shiftNumber = shiftNumber;
+  shift.closingStartedAt = new Date().toISOString();
+  emitShiftStatus(shift);
+
+  // Stop scheduler, idle monitor, and context monitor
+  stopScheduler(officeId);
+  stopIdleMonitor(officeId);
+  stopContextMonitor(officeId);
+
+  // Generate and write close document
+  const closeDoc = await generateCloseDocument(shift, office);
+  const nnn = String(shiftNumber).padStart(3, '0');
+  const closeDocPath = `shifts/shift-${nnn}-close.md`;
+  await writeFile(officeId, closeDocPath, closeDoc, 'system', `Shift #${shiftNumber} close report`);
+  shift.closeDocPath = closeDocPath;
+
+  // Inject close-request message to all active agents
+  const closeMsg = [
+    `[SWARM SYSTEM]: Shift #${shiftNumber} is closing.`,
+    `You have 60 seconds to append your shift notes to the close report.`,
+    `Run: swarm write ${closeDocPath} --append "Your notes here"`,
+    `After 60 seconds, all agents will be signed out automatically.`,
+  ].join('\n');
+
+  for (const slot of shift.slots) {
+    if (slot.sessionId && slot.status === 'active') {
+      injectMessage(slot.sessionId, closeMsg);
+    }
+  }
+
+  // Set timeout to badge out after 60 seconds
+  shift.closeTimeout = setTimeout(() => badgeOut(officeId), 60_000);
+
+  fireWebhook('shift:closing', { officeId, officeName: office.name, shiftNumber, closeDocPath });
+
+  return { closing: true, shiftNumber, closeDocPath };
+}
+
 export async function handleSlotExit(sessionId: string, exitCode: number): Promise<void> {
   const shift = getShiftBySessionId(sessionId);
-  if (!shift || shift.status !== 'active') return;
+  if (!shift || (shift.status !== 'active' && shift.status !== 'closing')) return;
 
   const slotState = shift.slots.find(s => s.sessionId === sessionId);
   if (!slotState) return;
@@ -437,6 +628,13 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
   if (slotState.pendingTimeouts) {
     for (const t of slotState.pendingTimeouts) clearTimeout(t);
     slotState.pendingTimeouts = [];
+  }
+
+  // During closing, mark as ended but don't attempt respawn
+  if (shift.status === 'closing') {
+    slotState.status = 'ended';
+    emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'ended');
+    return;
   }
 
   const retries = slotState.retryCount || 0;
@@ -548,6 +746,19 @@ export async function handleSlotExit(sessionId: string, exitCode: number): Promi
       slotState.error = undefined;
       emitShiftProgress(shift.officeId, slotState.slotIndex, slotState.name, 'active', newSessionId);
       fireWebhook('agent:respawned', { agentName: slotState.name, retryCount: slotState.retryCount, newSessionId });
+
+      // Inject rotation handoff if this was a context rotation
+      const rotationHandoff = (slotState as any).rotationHandoff;
+      if (rotationHandoff) {
+        delete (slotState as any).rotationHandoff;
+        slotState.pendingTimeouts.push(setTimeout(() => {
+          injectMessage(newSessionId,
+            `[SWARM SYSTEM]: You are a fresh instance of ${slotState.name}, rotated due to context pressure.\n` +
+            `Here is the handoff from your previous instance:\n${rotationHandoff}\n` +
+            `Continue where they left off. Check your tasks: swarm tasks --mine`
+          );
+        }, 4000));
+      }
 
       console.log(`Auto-respawned ${slotState.name} (attempt ${slotState.retryCount}/3, exit code was ${exitCode})`);
 
@@ -832,4 +1043,43 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
     console.error(`On-demand spawn failed for ${slot.name}:`, message);
     return null;
   }
+}
+
+/** Rotate an agent by killing its session and respawning the slot */
+export async function rotateAgent(sessionId: string, reason: string): Promise<void> {
+  const shift = getShiftBySessionId(sessionId);
+  if (!shift || shift.status !== 'active') return;
+
+  const slotState = shift.slots.find(s => s.sessionId === sessionId);
+  if (!slotState) return;
+
+  console.log(`Rotating ${slotState.name}: ${reason}`);
+
+  // 1. Ask agent to save state
+  injectMessage(sessionId,
+    `[SWARM SYSTEM]: Context rotation imminent — ${reason}. ` +
+    `Please immediately save your current state:\n` +
+    `swarm write handoff-${slotState.name.toLowerCase()}.md --content "` +
+    `Current task: [what you're working on] / Progress: [what's done] / Next steps: [what to do next] / Key files: [files you've been editing]"\n` +
+    `You have 30 seconds before respawn.`
+  );
+
+  // 2. Wait for handoff
+  await new Promise(resolve => setTimeout(resolve, 30_000));
+
+  // 3. Read handoff doc if written
+  let handoffDoc: string | null = null;
+  try {
+    const result = await readFile(shift.officeId, `handoff-${slotState.name.toLowerCase()}.md`);
+    if (result) handoffDoc = result.content;
+  } catch { /* not written, that's ok */ }
+
+  // 4. Reset retry count so handleSlotExit respawns cleanly
+  slotState.retryCount = 0;
+
+  // 5. Store handoff for injection after respawn
+  (slotState as any).rotationHandoff = handoffDoc;
+
+  // 6. Kill session — handleSlotExit will respawn
+  killSession(sessionId);
 }

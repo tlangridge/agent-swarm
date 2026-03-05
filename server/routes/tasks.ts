@@ -221,7 +221,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   recordTaskSuccess(senderSessionId);
 
   // Notify lead with structured completion summary
-  const leadSessionId = getLeadSessionId();
+  const leadSessionId = getLeadSessionId(sender.officeId || undefined);
   if (leadSessionId && leadSessionId !== senderSessionId) {
     const lines: string[] = [`[TASK COMPLETED]: "${task.title}" by ${sender.agentName}`];
     if (report.branch) lines.push(`  Branch: ${report.branch}`);
@@ -251,7 +251,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   if (nowReady.length > 0) {
     for (const ready of nowReady) {
       if (ready.assignedTo) {
-        const target = getMemberByName(ready.assignedTo);
+        const target = getMemberByName(ready.assignedTo, sender.officeId || undefined);
         if (target) {
           injectMessage(target.sessionId, `[SWARM SYSTEM]: Task "${ready.title}" (${ready.id}) is now unblocked — all dependencies are complete.`);
         }
@@ -281,7 +281,7 @@ taskRoutes.post('/:id/fail', async (req, res) => {
 
   // Notify lead about the failure
   const sender = getMember(senderSessionId)!;
-  const leadSessionId = getLeadSessionId();
+  const leadSessionId = getLeadSessionId(sender.officeId || undefined);
   if (leadSessionId && leadSessionId !== senderSessionId) {
     injectMessage(leadSessionId, `[SWARM SYSTEM]: ${sender.agentName} failed task "${task.title}" (${task.id}): ${reason}`);
   }

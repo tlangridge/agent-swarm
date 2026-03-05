@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import { listOffices, getOffice, saveOffice, deleteOffice } from '../services/office-store.js';
-import { badgeIn, badgeOut, getActiveShift, getActiveShifts, markReadyForReview } from '../services/shift-manager.js';
+import { badgeIn, badgeOut, closeShift, getActiveShift, getActiveShifts, markReadyForReview } from '../services/shift-manager.js';
 import { swarmEvents } from '../services/swarm-registry.js';
 
 export const officeRoutes = Router();
@@ -112,6 +112,18 @@ officeRoutes.post('/:id/badge-out', async (req, res) => {
   const shift = await badgeOut(req.params.id);
   if (!shift) return res.status(400).json({ error: 'No active shift to end' });
   res.json({ ended: true, shift });
+});
+
+// POST /api/offices/:id/close-shift — Close the current shift gracefully
+officeRoutes.post('/:id/close-shift', async (req, res) => {
+  try {
+    const result = await closeShift(req.params.id);
+    if (!result) return res.status(400).json({ error: 'No active shift to close' });
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    res.status(400).json({ error: message });
+  }
 });
 
 // POST /api/offices/:id/ready-for-review — Lead agent marks shift as ready for review

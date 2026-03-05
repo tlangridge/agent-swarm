@@ -27,7 +27,7 @@ api_delete()   { require_sid; curl -s -X DELETE -H "X-Session-Id: $SID" "$API$1"
 
 # ── commands ─────────────────────────────────────────────────────────────────
 
-cmd_status() { api_get "/api/swarm/agents"; }
+cmd_status() { api_get_auth "/api/swarm/agents"; }
 
 cmd_msg() {
   local to="${1:-}"; shift || true; local message="$*"
@@ -93,8 +93,7 @@ cmd_tasks() {
   [ -n "$status" ] && qs="${qs:+$qs&}status=$status"
   [ -n "$ready" ]  && qs="${qs:+$qs&}ready=true"
   [ -n "$qs" ]     && qs="?$qs"
-  if [ -n "$mine" ]; then api_get_auth "/api/swarm/tasks$qs"
-  else api_get "/api/swarm/tasks$qs"; fi
+  api_get_auth "/api/swarm/tasks$qs"
 }
 
 cmd_task() {
@@ -152,7 +151,7 @@ cmd_task_fail() {
 cmd_task_deps() {
   local id="${1:-}"
   [ -z "$id" ] && { echo "Usage: swarm task deps <id>" >&2; exit 1; }
-  api_get "/api/swarm/tasks/$id"
+  api_get_auth "/api/swarm/tasks/$id"
 }
 
 cmd_task_create() {
@@ -339,7 +338,7 @@ cmd_log() {
 
 cmd_context() { api_get_auth "/api/swarm/files/context.md"; }
 
-cmd_dashboard() { api_get "/api/swarm/dashboard"; }
+cmd_dashboard() { api_get_auth "/api/swarm/dashboard"; }
 
 cmd_summon() {
   local name="${1:-}"
@@ -347,7 +346,7 @@ cmd_summon() {
   api_post "/api/swarm/summon" "{\"name\":$(json_string "$name")}"
 }
 
-cmd_worktrees() { api_get "/api/worktrees/overview"; }
+cmd_worktrees() { api_get_auth "/api/worktrees/overview"; }
 
 # ── help ─────────────────────────────────────────────────────────────────────
 

@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { getProjectPath } from './project.js';
 import { sessions } from '../pty-manager.js';
-import { getMembers } from '../services/swarm-registry.js';
+import { getMembers, getMembersByOffice } from '../services/swarm-registry.js';
+import { getOffice } from '../services/office-store.js';
 import {
   isGitRepo,
   listWorktrees,
@@ -13,9 +14,19 @@ import {
 
 export const worktreeRoutes = Router();
 
+/** Resolve project path: office-specific if officeId provided, otherwise global */
+async function resolveProjectPath(officeId?: string): Promise<string> {
+  if (officeId) {
+    const office = await getOffice(officeId);
+    if (office?.projectPath) return office.projectPath;
+  }
+  return getProjectPath();
+}
+
 // GET /api/worktrees — list worktrees for the current project path
-worktreeRoutes.get('/', (_req, res) => {
-  const projectPath = getProjectPath();
+worktreeRoutes.get('/', async (req, res) => {
+  const officeId = typeof req.query.officeId === 'string' ? req.query.officeId : undefined;
+  const projectPath = await resolveProjectPath(officeId);
   if (!projectPath) {
     return res.json({ worktrees: [], isGitRepo: false });
   }
@@ -35,8 +46,9 @@ worktreeRoutes.get('/', (_req, res) => {
 });
 
 // GET /api/worktrees/overview — list worktree changes + active agents
-worktreeRoutes.get('/overview', (_req, res) => {
-  const projectPath = getProjectPath();
+worktreeRoutes.get('/overview', async (req, res) => {
+  const officeId = typeof req.query.officeId === 'string' ? req.query.officeId : undefined;
+  const projectPath = await resolveProjectPath(officeId);
   const generatedAt = new Date().toISOString();
 
   if (!projectPath) {
@@ -62,7 +74,7 @@ worktreeRoutes.get('/overview', (_req, res) => {
     const normalizedByPath = new Map(
       allWorktrees.map(wt => [wt.path, normalizeFsPath(wt.path)]),
     );
-    const members = getMembers();
+    const members = officeId ? getMembersByOffice(officeId) : getMembers();
     const membersBySessionId = new Map(members.map(member => [member.sessionId, member]));
 
     const worktrees = allWorktrees.map(wt => {
@@ -143,8 +155,9 @@ worktreeRoutes.get('/overview', (_req, res) => {
 });
 
 // POST /api/worktrees — create a new worktree
-worktreeRoutes.post('/', (req, res) => {
-  const projectPath = getProjectPath();
+worktreeRoutes.post('/', async (req, res) => {
+  const officeId = typeof req.query.officeId === 'string' ? req.query.officeId : undefined;
+  const projectPath = await resolveProjectPath(officeId);
   if (!projectPath) {
     return res.status(400).json({ error: 'No project path set' });
   }
@@ -168,8 +181,9 @@ worktreeRoutes.post('/', (req, res) => {
 });
 
 // DELETE /api/worktrees/:branch — remove a worktree
-worktreeRoutes.delete('/:branch', (req, res) => {
-  const projectPath = getProjectPath();
+worktreeRoutes.delete('/:branch', async (req, res) => {
+  const officeId = typeof req.query.officeId === 'string' ? req.query.officeId : undefined;
+  const projectPath = await resolveProjectPath(officeId);
   if (!projectPath) {
     return res.status(400).json({ error: 'No project path set' });
   }
