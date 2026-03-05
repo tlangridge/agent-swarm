@@ -22,6 +22,7 @@ A web-based command center for orchestrating teams of AI coding agents. Launch C
 - **Lead/Worker hierarchy** — Designate a lead agent who coordinates the team
 - **Spawn modes** — Eager (boot all agents at once) or Demand (boot agents only when tasks are assigned)
 - **Idle auto-dismiss** — Automatically shut down agents after configurable idle periods
+- **Cost & token tracking** — Per-agent cost and token usage tracking with budget ceilings and auto-pause when limits are reached
 
 ### Pipeline & Tasks
 - **Kanban-style pipeline** — Define stages (requirements → design → implementation → review → testing → deployment)
@@ -31,6 +32,7 @@ A web-based command center for orchestrating teams of AI coding agents. Launch C
 - **Completion reports** — Auto-generated reports with git diff stats when tasks are marked done
 - **Priority levels** — Urgent, High, Medium, Low with visual indicators
 - **Expandable task cards** — Click to see full details, context, and history
+- **Atomic task checkout** — Optimistic locking on task claims (409 on conflict) with stale lock release on agent crash
 
 ### Coordination
 - **Agent-to-agent messaging** — Agents communicate via REST API, messages injected into terminals
@@ -38,6 +40,7 @@ A web-based command center for orchestrating teams of AI coding agents. Launch C
 - **Workspace files** — Shared file system for agents to collaborate on documents
 - **Cron scheduler** — Schedule recurring prompts (e.g., "every 15m" status checks) targeting specific agents or roles
 - **Webhook notifications** — HTTP callbacks on shift events
+- **Skills system** — Modular agent capabilities injected via `--add-dir`, with bundled skills for code review, coordination, task management, git worktree workflows, context conservation, and more
 
 ### Developer Experience
 - **Project folder selection** — Pick a working directory for all agents via the header UI
@@ -47,6 +50,9 @@ A web-based command center for orchestrating teams of AI coding agents. Launch C
 - **Session persistence** — Agent sessions survive server restarts
 - **Workflow sidebar** — Live view of scheduled tasks, workspace files, and pipeline status
 - **Circuit breaker** — Automatic failure tracking per agent with visual indicators
+- **API key management** — Global and per-office API key configuration via a dedicated UI panel
+- **Context monitoring** — Track agent context window usage to avoid exceeding limits
+- **Notifications** — Desktop and browser notification support for shift events and task updates
 
 ## Architecture
 
@@ -55,23 +61,33 @@ Client (React + Vite + xterm.js + react-mosaic)
     ↕ WebSocket + REST API
 Server (Express + node-pty + WebSocket)
     ├── services/
-    │   ├── office-store     — Office/shift persistence
-    │   ├── swarm-registry   — In-memory agent membership
-    │   ├── swarm-prompts    — System prompt injection
-    │   ├── task-board       — File-based task storage
-    │   ├── cron-scheduler   — Recurring prompt scheduler
-    │   ├── workspace-files  — Shared file system
-    │   ├── shift-manager    — Shift lifecycle + idle monitoring
-    │   ├── activity-parser  — Terminal scrollback analysis
-    │   ├── pty-writer       — Safe terminal message injection
-    │   └── worktree         — Git worktree management
+    │   ├── office-store      — Office/shift persistence
+    │   ├── swarm-registry    — In-memory agent membership
+    │   ├── swarm-prompts     — System prompt injection
+    │   ├── task-board        — File-based task storage
+    │   ├── cron-scheduler    — Recurring prompt scheduler
+    │   ├── workspace-files   — Shared file system
+    │   ├── shift-manager     — Shift lifecycle + idle monitoring
+    │   ├── activity-parser   — Terminal scrollback analysis
+    │   ├── pty-writer        — Safe terminal message injection
+    │   ├── worktree          — Git worktree management
+    │   ├── cost-tracker      — Per-agent cost & token tracking
+    │   ├── key-store         — API key management (global + per-office)
+    │   ├── skill-registry    — Skill discovery and registration
+    │   ├── skill-injector    — Skill injection via --add-dir
+    │   ├── skill-installer   — Skill installation
+    │   ├── context-monitor   — Context window usage tracking
+    │   ├── notification-mgr  — Desktop/browser notifications
+    │   ├── session-persist   — Session persistence across restarts
+    │   └── webhooks          — Webhook notification delivery
     ├── routes/
-    │   ├── swarm            — Agent messaging API
-    │   ├── tasks            — Task CRUD
-    │   ├── offices          — Office management
-    │   ├── crons            — Cron job management
-    │   └── workspace        — Shared file API
-    └── cli/swarm            — Bash CLI for agents
+    │   ├── swarm             — Agent messaging API
+    │   ├── tasks             — Task CRUD
+    │   ├── offices           — Office management
+    │   ├── crons             — Cron job management
+    │   ├── workspace         — Shared file API
+    │   └── keys              — API key management
+    └── cli/swarm             — Bash CLI for agents
 ```
 
 ## Getting Started
@@ -103,6 +119,10 @@ Opens the dashboard at `http://localhost:5173` with the API on port 3010.
 | Variable | Required | Description |
 |---|---|---|
 | `AGENTMAIL_API_KEY` | Recommended | [AgentMail](https://agentmail.to) API key for agent email provisioning |
+| `ANTHROPIC_API_KEY` | No | API key for Claude Code agents |
+| `OPENAI_API_KEY` | No | API key for Codex CLI agents |
+| `GOOGLE_API_KEY` | No | API key for Gemini CLI agents |
+| `GEMINI_API_KEY` | No | Alternative API key for Gemini CLI agents |
 | `PORT` | No | Server port (default: `3010`) |
 
 ## Usage
@@ -193,6 +213,9 @@ client/src/
     OfficeDashboard.tsx          # Office cards, badge in/out
     OfficeEditor.tsx             # Create/edit office templates
     AgentPicker.tsx              # Launch individual agents
+    AgentCard.tsx                # Agent dashboard cards
+    ApiKeyManager.tsx            # API key management UI
+    OfficeTabBar.tsx             # Tab bar for office navigation
     PipelinePanel.tsx            # Kanban task board
     WorkflowPanel.tsx            # Cron jobs + workspace files sidebar
     ShiftStatusBar.tsx           # Active shift status
@@ -201,8 +224,11 @@ client/src/
     WorktreeActivityPanel.tsx    # Git worktree changes
   hooks/
     useAgents.ts                 # Agent CRUD
+    useHashRoute.ts              # Hash-based routing
+    useNotifications.ts          # Desktop/browser notifications
     useOffices.ts                # Office CRUD + shift management
     useTasks.ts                  # Task polling
+    useWorktreeOverview.ts       # Worktree overview
     useWorktrees.ts              # Worktree management
 
 server/
@@ -214,6 +240,7 @@ server/
     tasks.ts                     # Task CRUD API
     offices.ts                   # Office management API
     crons.ts                     # Cron job API
+    keys.ts                      # API key management API
     workspace.ts                 # Shared file API
     worktrees.ts                 # Git worktree API
   services/
@@ -227,9 +254,28 @@ server/
     activity-parser.ts           # Terminal scrollback analysis
     pty-writer.ts                # Safe PTY message injection
     worktree.ts                  # Git worktree management
+    cost-tracker.ts              # Per-agent cost & token tracking
+    context-monitor.ts           # Context window usage tracking
+    key-store.ts                 # API key management (global + per-office)
+    skill-injector.ts            # Skill injection via --add-dir
+    skill-installer.ts           # Skill installation
+    skill-registry.ts            # Skill discovery and registration
+    notification-manager.ts      # Desktop/browser notification delivery
+    session-persistence.ts       # Session persistence across restarts
+    webhooks.ts                  # Webhook notification delivery
 
 cli/
   swarm                          # Bash CLI for agent coordination
+
+skills/
+  code-review/SKILL.md           # Code review skill
+  context-conservation/SKILL.md  # Context conservation skill
+  git-worktree/SKILL.md          # Git worktree workflow skill
+  lead-agent/SKILL.md            # Lead agent coordination skill
+  shift-protocol/SKILL.md        # Shift protocol skill
+  swarm-coordination/SKILL.md    # Swarm coordination skill
+  task-management/SKILL.md       # Task management skill
+  worker-agent/SKILL.md          # Worker agent skill
 
 examples/
   rosters/dev-team.json          # Example office template
