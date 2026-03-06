@@ -14,6 +14,12 @@ export interface PipelineStage {
   assignedRoles: FunctionalRole[];
 }
 
+export interface PipelineStagePlacement {
+  beforeStage?: string;
+  afterStage?: string;
+  position?: number;
+}
+
 export interface OfficeSlot {
   name: string;
   functionalRole: FunctionalRole;
@@ -58,6 +64,76 @@ export interface Office {
   nextShiftNumber?: number;                    // incremented on shift close
   createdAt: string;
   updatedAt: string;
+}
+
+function normalizeStageKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+export function findPipelineStage(office: Office, stageName: string): PipelineStage | null {
+  const key = normalizeStageKey(stageName);
+  if (!key) return null;
+  return office.pipeline?.find(stage => normalizeStageKey(stage.name) === key) ?? null;
+}
+
+export function getPipelineStageNames(office: Office): string[] {
+  return (office.pipeline ?? []).map(stage => stage.name);
+}
+
+export function insertPipelineStage(
+  office: Office,
+  stage: PipelineStage,
+  placement?: PipelineStagePlacement,
+): { pipeline: PipelineStage[]; inserted: boolean } {
+  const nextStage: PipelineStage = {
+    name: stage.name.trim(),
+    description: stage.description || '',
+    assignedRoles: stage.assignedRoles ?? [],
+  };
+  if (!nextStage.name) {
+    throw new Error('Stage name is required');
+  }
+
+  const existing = findPipelineStage(office, nextStage.name);
+  if (existing) {
+    return { pipeline: office.pipeline ?? [], inserted: false };
+  }
+
+  const current = [...(office.pipeline ?? [])];
+  if (current.length === 0) {
+    return { pipeline: [nextStage], inserted: true };
+  }
+
+  const selectors = [
+    placement?.beforeStage ? 'beforeStage' : null,
+    placement?.afterStage ? 'afterStage' : null,
+    placement?.position != null ? 'position' : null,
+  ].filter(Boolean);
+  if (selectors.length !== 1) {
+    throw new Error('Specify exactly one of beforeStage, afterStage, or position');
+  }
+
+  let index = -1;
+  if (placement?.beforeStage) {
+    index = current.findIndex(item => normalizeStageKey(item.name) === normalizeStageKey(placement.beforeStage!));
+    if (index < 0) {
+      throw new Error(`Unknown beforeStage "${placement.beforeStage}"`);
+    }
+  } else if (placement?.afterStage) {
+    index = current.findIndex(item => normalizeStageKey(item.name) === normalizeStageKey(placement.afterStage!));
+    if (index < 0) {
+      throw new Error(`Unknown afterStage "${placement.afterStage}"`);
+    }
+    index += 1;
+  } else if (placement?.position != null) {
+    index = placement.position;
+    if (!Number.isInteger(index) || index < 0 || index > current.length) {
+      throw new Error(`Position must be between 0 and ${current.length}`);
+    }
+  }
+
+  current.splice(index, 0, nextStage);
+  return { pipeline: current, inserted: true };
 }
 
 async function ensureDir(): Promise<void> {

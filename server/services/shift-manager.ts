@@ -14,7 +14,7 @@ import type { PersonaContext } from './swarm-prompts.js';
 import { injectMessage } from './pty-writer.js';
 import { startScheduler, stopScheduler } from './cron-scheduler.js';
 import { getProjectPath } from '../routes/project.js';
-import { isGitRepo, createWorktree, removeWorktree } from './worktree.js';
+import { isGitRepo, createWorktree } from './worktree.js';
 import { startContextMonitor, stopContextMonitor } from './context-monitor.js';
 import { listFiles, readFile, writeFile } from './workspace-files.js';
 import { listTasks } from './task-board.js';
@@ -105,6 +105,9 @@ function buildLeadKickoffMessage(
   projectPath: string | undefined,
   lastClose: Awaited<ReturnType<typeof getLastCloseDocument>>,
 ): string {
+  const hasPm = shift.slots.some(
+    s => s.functionalRole === 'product-manager' && s.status !== 'failed' && s.status !== 'ended',
+  );
   const teamList = shift.slots
     .filter(s => s.status !== 'failed' && s.status !== 'ended')
     .map(s => `  - ${s.name} (${s.functionalRole})`)
@@ -145,8 +148,16 @@ function buildLeadKickoffMessage(
     '\nStart by:',
     '1. Read existing context: `swarm context`',
     '2. Check current tasks: `swarm tasks`',
-    '3. If no tasks exist, wait for the user\'s mission, then break it into tasks and assign them.',
-    '4. Set up a PM check-in: `swarm cron create --name "PM Check-In" --schedule "every 10m" --target-role product-manager --prompt "Check task board with swarm tasks. Review progress, identify blocked tasks, and message the lead with a brief status update. Flag any stale or stuck agents."`',
+    hasPm
+      ? '3. PM-first operations: delegate day-to-day task board management to the PM, then keep strategic oversight and periodic check-ins.'
+      : '3. If no PM is staffed, you own day-to-day task board operations this shift.',
+    hasPm
+      ? '4. If no tasks exist, wait for the user\'s mission, then have the PM break it into tasks and run the board.'
+      : '4. If no tasks exist, wait for the user\'s mission, then break it into tasks and assign them.',
+    '5. Use only configured pipeline stages when creating tasks. If the office needs a new stage, add it explicitly with `swarm pipeline add-stage <name> --after <existing-stage>` or `swarm task create ... --create-stage --after <existing-stage>`.',
+    hasPm
+      ? '6. Ensure a PM check-in exists. Only create it if this office does not already have one: `swarm cron create --name "PM Check-In" --schedule "every 10m" --target-role product-manager --prompt "Check task board with swarm tasks. Summarize progress, blocked or stale tasks, pending technical decisions, and explicit escalation requests for high-level architecture or product choices. Message the lead with this concise update."`'
+      : '6. If no PM is staffed in this shift, run direct lead check-ins with `swarm activity` to keep tasks moving and escalate strategic decisions quickly.',
   );
 
   return kickoffParts.join('\n');
@@ -400,19 +411,14 @@ export async function badgeIn(office: Office, broadcast: (data: unknown) => void
         const safeName = slot.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
         const branch = `swarm/${safeName}/${date}`;
         try {
-          try {
-            // Remove stale worktree from a previous shift on the same day
-            removeWorktree(projectPath, branch);
-          } catch {
-            // Doesn't exist or already removed — fine
-          }
           const wt = createWorktree(projectPath, branch);
           agentProjectPath = wt.path;
           worktreeBranch = branch;
           slotState.worktreeBranch = branch;
           slotState.worktreePath = wt.path;
         } catch (err) {
-          console.warn(`Worktree creation failed for ${slot.name}, using shared checkout:`, err);
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`Worktree unavailable for ${slot.name}; using shared checkout: ${message}`);
         }
       }
 
@@ -1023,19 +1029,14 @@ export async function spawnSlotOnDemand(slotIndex: number, officeId?: string): P
       const safeName = slot.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
       const branch = `swarm/${safeName}/${date}`;
       try {
-        try {
-          // Remove stale worktree from a previous shift on the same day
-          removeWorktree(projectPath, branch);
-        } catch {
-          // Doesn't exist or already removed — fine
-        }
         const wt = createWorktree(projectPath, branch);
         agentProjectPath = wt.path;
         worktreeBranch = branch;
         slotState.worktreeBranch = branch;
         slotState.worktreePath = wt.path;
       } catch (err) {
-        console.warn(`Worktree creation failed for ${slot.name}, using shared checkout:`, err);
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`Worktree unavailable for ${slot.name}; using shared checkout: ${message}`);
       }
     }
 

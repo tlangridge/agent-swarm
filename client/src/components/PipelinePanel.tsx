@@ -55,13 +55,23 @@ function sortByPriority(tasks: TaskItem[]): TaskItem[] {
   });
 }
 
+interface RenderStage extends PipelineStage {
+  source: 'configured' | 'derived';
+}
+
 export default function PipelinePanel({ tasks, stages, officeId, onMoveTask }: Props) {
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [hideDone, setHideDone] = useState(true);
+  const taskById = new Map(tasks.map(task => [task.id, task]));
+  const configuredStageLookup = new Map(stages.map(stage => [stage.name.trim().toLowerCase(), stage]));
+  const orphanedTasks = stages.length > 0
+    ? tasks.filter(task => !configuredStageLookup.has(task.stage.trim().toLowerCase()))
+    : [];
+  const orphanedStageNames = [...new Set(orphanedTasks.map(task => task.stage))].sort((a, b) => a.localeCompare(b));
 
-  const effectiveStages = stages.length > 0
-    ? stages
-    : deriveStagesFromTasks(tasks);
+  const effectiveStages: RenderStage[] = stages.length > 0
+    ? stages.map(stage => ({ ...stage, source: 'configured' as const }))
+    : deriveStagesFromTasks(tasks).map(stage => ({ ...stage, source: 'derived' as const }));
 
   const handleMove = (taskId: string, updates: { stage?: string; status?: string }) => {
     if (!onMoveTask) return;
@@ -71,6 +81,7 @@ export default function PipelinePanel({ tasks, stages, officeId, onMoveTask }: P
 
   const activeTaskCount = tasks.filter(t => t.status !== 'done').length;
   const doneTaskCount = tasks.filter(t => t.status === 'done').length;
+  const allVisibleTasksHiddenByDone = hideDone && activeTaskCount === 0 && doneTaskCount > 0;
 
   return (
     <div className="pipeline-panel">
@@ -89,9 +100,54 @@ export default function PipelinePanel({ tasks, stages, officeId, onMoveTask }: P
           <span className="pipeline-task-count">{activeTaskCount} active</span>
         </div>
       </div>
+      {allVisibleTasksHiddenByDone && (
+        <div className="pipeline-board-notice">
+          <div>
+            All tasks in this office are currently marked done, so the board looks empty while the done filter is on.
+          </div>
+          <button
+            className="pipeline-notice-btn"
+            onClick={() => setHideDone(false)}
+          >
+            Show {doneTaskCount} done task{doneTaskCount === 1 ? '' : 's'}
+          </button>
+        </div>
+      )}
+      {orphanedTasks.length > 0 && (
+        <div className="pipeline-orphan-panel">
+          <div className="pipeline-orphan-header">
+            <span className="pipeline-orphan-title">Tasks outside configured pipeline</span>
+            <span className="pipeline-orphan-count">
+              {orphanedTasks.length} task{orphanedTasks.length === 1 ? '' : 's'} in {orphanedStageNames.length} invalid stage{orphanedStageNames.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className="pipeline-orphan-copy">
+            These tasks are stored with stage names that do not exist in this office&apos;s configured pipeline. They are visible here for cleanup but are not rendered as kanban columns.
+          </div>
+          <div className="pipeline-orphan-stage-list">
+            {orphanedStageNames.map(stageName => {
+              const stageTasks = orphanedTasks.filter(task => task.stage === stageName);
+              return (
+                <div key={stageName} className="pipeline-orphan-stage">
+                  <div className="pipeline-orphan-stage-name">{stageName}</div>
+                  <div className="pipeline-orphan-task-list">
+                    {stageTasks.map(task => (
+                      <div key={task.id} className="pipeline-orphan-task">
+                        <span className={`pipeline-orphan-status status-${task.status}`}>{STATUS_LABELS[task.status] || task.status}</span>
+                        <span className="pipeline-orphan-task-title">{task.title}</span>
+                        <span className="pipeline-orphan-task-id">{task.id}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div className="pipeline-columns">
         {effectiveStages.map((stage, stageIndex) => {
-          const stageTasks = tasks.filter(t => t.stage === stage.name);
+          const stageTasks = tasks.filter(t => t.stage.trim().toLowerCase() === stage.name.trim().toLowerCase());
           const activeTasks = sortByPriority(stageTasks.filter(t => t.status !== 'done'));
           const doneTasks = hideDone ? [] : sortByPriority(stageTasks.filter(t => t.status === 'done'));
           const visibleTasks = [...activeTasks, ...doneTasks];
@@ -112,6 +168,7 @@ export default function PipelinePanel({ tasks, stages, officeId, onMoveTask }: P
                 {visibleTasks.map(task => {
                   const isDone = task.status === 'done';
                   const isExpanded = expandedTaskId === task.id;
+                  const unmetDependencyCount = (task.dependsOn || []).filter(depId => taskById.get(depId)?.status !== 'done').length;
 
                   return (
                     <div
@@ -134,8 +191,8 @@ export default function PipelinePanel({ tasks, stages, officeId, onMoveTask }: P
                           </span>
                         )}
                         <span className="pipeline-card-title">{task.title}</span>
-                        {task.dependsOn && task.dependsOn.length > 0 && task.status === 'open' && (
-                          <span className="pipeline-card-deps" title={`Blocked by ${task.dependsOn.length} task(s)`}>
+                        {unmetDependencyCount > 0 && task.status === 'open' && (
+                          <span className="pipeline-card-deps" title={`Waiting on ${unmetDependencyCount} ${unmetDependencyCount === 1 ? 'dependency' : 'dependencies'}`}>
                             &#128274;
                           </span>
                         )}

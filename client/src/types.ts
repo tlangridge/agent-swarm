@@ -237,6 +237,7 @@ export interface TerminalSession {
   functionalRole: FunctionalRole | null;
   worktreeBranch?: string;
   officeId?: string;
+  compactionCount: number;
 }
 
 // WebSocket messages
@@ -299,8 +300,9 @@ export interface WsOutputMsg { type: 'output'; sessionId: string; data: string }
 export interface WsExitedMsg { type: 'exited'; sessionId: string; exitCode: number }
 export interface WsErrorMsg { type: 'error'; message: string }
 export interface WsSwarmUpdateMsg { type: 'swarm:update'; members: SwarmMember[]; leadSessionId: string | null; officeId?: string }
-export interface WsSessionSpawnedMsg { type: 'session:spawned'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; officeId?: string }
-export interface WsSessionRestoreMsg { type: 'session:restore'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; scrollback?: string; officeId?: string }
+export interface WsSessionSpawnedMsg { type: 'session:spawned'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; officeId?: string; compactionCount: number }
+export interface WsSessionRestoreMsg { type: 'session:restore'; sessionId: string; agentId: string | null; agentName: string | null; agentEmail: string | null; cliType: CliType; executionMode: ExecutionMode; swarmRole: SwarmRole; functionalRole: FunctionalRole | null; worktreeBranch?: string | null; scrollback?: string; officeId?: string; compactionCount: number }
+export interface WsSessionCompactionMsg { type: 'session:compaction'; sessionId: string; compactionCount: number; officeId?: string | null }
 export interface WsShiftProgressMsg { type: 'shift:progress'; officeId: string; slotIndex: number; slotName: string; status: ShiftSlotStatus; sessionId?: string; error?: string }
 export interface WsShiftStatusMsg { type: 'shift:status'; shift: ShiftState }
 export interface WsCostUpdateMsg { type: 'cost:update'; sessionId: string; agentName: string; officeId: string; totalCost: number; budgetCents: number | null; budgetPercent: number | null }
@@ -322,7 +324,7 @@ export interface WsOfficeNotificationMsg {
   notification: OfficeNotification;
 }
 
-export type ServerMessage = WsCreatedMsg | WsOutputMsg | WsExitedMsg | WsErrorMsg | WsSwarmUpdateMsg | WsSessionSpawnedMsg | WsSessionRestoreMsg | WsShiftProgressMsg | WsShiftStatusMsg | WsCostUpdateMsg | WsOfficeNotificationMsg;
+export type ServerMessage = WsCreatedMsg | WsOutputMsg | WsExitedMsg | WsErrorMsg | WsSwarmUpdateMsg | WsSessionSpawnedMsg | WsSessionRestoreMsg | WsSessionCompactionMsg | WsShiftProgressMsg | WsShiftStatusMsg | WsCostUpdateMsg | WsOfficeNotificationMsg;
 
 // --- Saved session picker types ---
 

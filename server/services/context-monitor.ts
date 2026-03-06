@@ -1,5 +1,5 @@
 import { sessions } from '../pty-manager.js';
-import { getMember, getMembersByOffice, getLeadSessionIdForOffice } from './swarm-registry.js';
+import { getMember, getMembersByOffice, getCoordinatorSessionIdForOffice } from './swarm-registry.js';
 import { injectMessage } from './pty-writer.js';
 
 // Track state to avoid duplicate warnings
@@ -42,6 +42,12 @@ export function computeContextHealth(sessionId: string): number {
   if (session.cliType === 'codex') {
     const reported = parseLatestCodexContextLeft(session.scrollback);
     if (reported !== null) return reported;
+
+    // Codex's visible context meter is authoritative, but it is not reliably
+    // preserved in PTY scrollback. Avoid low/critical warnings based solely on
+    // transcript size when we do not have an actual reported percentage.
+    const compactionPenalty = Math.min(40, session.compactionCount * 20);
+    return Math.max(60, 100 - compactionPenalty);
   }
 
   // Grace period: brand-new sessions are always "healthy"
@@ -74,13 +80,13 @@ export function onCompaction(sessionId: string, count: number): void {
     `This means you're using significant context. To extend your session:\n` +
     `- Delegate more work to subagents (Task tool) instead of doing it in your main context\n` +
     `- Avoid reading large files directly — have a subagent summarize them\n` +
-    `- If you're too degraded to continue, tell the lead you need a fresh start`
+    `- If you're too degraded to continue, tell the PM (or lead if no PM) you need a fresh start`
   );
 
-  // Notify the lead (if this isn't the lead)
-  const leadId = getLeadSessionIdForOffice(member.officeId);
-  if (leadId && leadId !== sessionId) {
-    injectMessage(leadId,
+  // Notify the PM first (fallback: lead)
+  const coordinatorId = getCoordinatorSessionIdForOffice(member.officeId);
+  if (coordinatorId && coordinatorId !== sessionId) {
+    injectMessage(coordinatorId,
       `[SWARM SYSTEM]: ${member.agentName} has compacted their context (${count}x). ` +
       `They can continue working but may lose effectiveness over time. ` +
       `Consider reassigning heavy tasks if they slow down.`
@@ -93,7 +99,7 @@ export function startContextMonitor(officeId: string): void {
 
   const timer = setInterval(() => {
     const members = getMembersByOffice(officeId);
-    const leadId = getLeadSessionIdForOffice(officeId);
+    const coordinatorId = getCoordinatorSessionIdForOffice(officeId);
 
     for (const member of members) {
       const health = computeContextHealth(member.sessionId);
@@ -104,10 +110,10 @@ export function startContextMonitor(officeId: string): void {
         injectMessage(member.sessionId,
           `[SWARM SYSTEM]: Your context health is critically low (${health}/100). ` +
           `You should wrap up your current task and delegate remaining work. ` +
-          `If you can't continue effectively, tell the lead you need to be rotated.`
+          `If you can't continue effectively, tell the PM (or lead if no PM) you need to be rotated.`
         );
-        if (leadId && leadId !== member.sessionId) {
-          injectMessage(leadId,
+        if (coordinatorId && coordinatorId !== member.sessionId) {
+          injectMessage(coordinatorId,
             `[SWARM SYSTEM]: ${member.agentName}'s context health is critically low (${health}/100). ` +
             `Consider reassigning their remaining work to another agent.`
           );
@@ -120,8 +126,8 @@ export function startContextMonitor(officeId: string): void {
           `Conserve context by delegating more to subagents. ` +
           `Avoid reading files or running commands directly in your main context.`
         );
-        if (leadId && leadId !== member.sessionId) {
-          injectMessage(leadId,
+        if (coordinatorId && coordinatorId !== member.sessionId) {
+          injectMessage(coordinatorId,
             `[SWARM SYSTEM]: ${member.agentName}'s context health is low (${health}/100). ` +
             `They may need work reassigned soon.`
           );

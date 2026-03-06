@@ -10,6 +10,33 @@ import { injectMessage } from '../services/pty-writer.js';
 
 export const cronRoutes = Router();
 
+function normalizeCronText(value: string | undefined): string {
+  return (value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function findEquivalentCronJob(office: NonNullable<Awaited<ReturnType<typeof getActiveOffice>>>, candidate: {
+  name: string;
+  schedule: string;
+  targetRole?: FunctionalRole;
+  targetAgent?: string;
+  prompt: string;
+}): CronJob | undefined {
+  const jobs = office.cronJobs ?? [];
+  const candidateName = normalizeCronText(candidate.name);
+  const candidateSchedule = normalizeCronText(candidate.schedule);
+  const candidateTargetRole = candidate.targetRole || undefined;
+  const candidateTargetAgent = normalizeCronText(candidate.targetAgent);
+  const candidatePrompt = normalizeCronText(candidate.prompt);
+
+  return jobs.find(job =>
+    normalizeCronText(job.name) === candidateName &&
+    normalizeCronText(job.schedule) === candidateSchedule &&
+    (job.targetRole || undefined) === candidateTargetRole &&
+    normalizeCronText(job.targetAgent) === candidateTargetAgent &&
+    normalizeCronText(job.prompt) === candidatePrompt
+  );
+}
+
 /**
  * Resolve target session IDs for a cron job based on its targeting config.
  */
@@ -103,6 +130,17 @@ cronRoutes.post('/', async (req, res) => {
   const scheduleMatch = schedule.match(/^every\s+(\d+)\s*(s|m|h)$/i);
   if (!scheduleMatch || parseInt(scheduleMatch[1], 10) <= 0) {
     return res.status(400).json({ error: 'Invalid schedule format. Use "every Nm", "every Nh", or "every Ns".' });
+  }
+
+  const existingJob = findEquivalentCronJob(office, {
+    name,
+    schedule,
+    targetRole: targetRole as FunctionalRole | undefined,
+    targetAgent: targetAgent as string | undefined,
+    prompt,
+  });
+  if (existingJob) {
+    return res.status(200).json(existingJob);
   }
 
   const job: CronJob = {

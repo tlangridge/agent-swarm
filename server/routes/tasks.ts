@@ -6,6 +6,8 @@ import { getActiveShift, getShiftBySessionId, spawnSlotOnDemand } from '../servi
 import { injectMessage } from '../services/pty-writer.js';
 import { sessions } from '../pty-manager.js';
 import { isGitRepo, getWorktreeDiffStat, getWorktreeDiffPatch } from '../services/worktree.js';
+import { getOffice, saveOffice, findPipelineStage, getPipelineStageNames, insertPipelineStage } from '../services/office-store.js';
+import type { FunctionalRole } from '../services/swarm-registry.js';
 
 export const taskRoutes = Router();
 
@@ -38,6 +40,131 @@ function resolveOfficeId(req: Request): string | undefined {
 function taskMatchesOffice(task: TaskItem, officeId?: string): boolean {
   if (!officeId) return true;
   return task.officeId === officeId;
+}
+
+function normalizeStageInput(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function readStageCreationParams(body: Record<string, unknown>): {
+  createStage: boolean;
+  beforeStage?: string;
+  afterStage?: string;
+  position?: number;
+  stageDescription?: string;
+  stageAssignedRoles?: FunctionalRole[];
+} {
+  const positionValue = body.position;
+  const parsedPosition = typeof positionValue === 'number'
+    ? positionValue
+    : typeof positionValue === 'string' && positionValue.trim() !== ''
+      ? Number(positionValue)
+      : undefined;
+
+  return {
+    createStage: body.createStage === true,
+    beforeStage: normalizeStageInput(body.beforeStage),
+    afterStage: normalizeStageInput(body.afterStage),
+    position: Number.isFinite(parsedPosition) ? parsedPosition : undefined,
+    stageDescription: normalizeStageInput(body.stageDescription),
+    stageAssignedRoles: Array.isArray(body.stageAssignedRoles)
+      ? body.stageAssignedRoles.filter((value): value is FunctionalRole => typeof value === 'string')
+      : undefined,
+  };
+}
+
+function invalidStagePayload(stage: string, validStages: string[]) {
+  return {
+    error: `Unknown pipeline stage "${stage}"`,
+    errorCode: 'invalid_stage',
+    stage,
+    validStages,
+    requiresCreateStage: true,
+    hint: 'Use createStage with beforeStage, afterStage, or position to add a new stage explicitly.',
+  };
+}
+
+async function ensureTaskStage(
+  officeId: string | undefined,
+  requestedStage: string | undefined,
+  options: ReturnType<typeof readStageCreationParams>,
+): Promise<{ stage?: string; error?: { status: number; body: unknown } }> {
+  if (!requestedStage) {
+    return {};
+  }
+  if (!officeId) {
+    return { stage: requestedStage };
+  }
+
+  const office = await getOffice(officeId);
+  if (!office) {
+    return { error: { status: 404, body: { error: 'Office not found' } } };
+  }
+
+  if (!office.pipeline || office.pipeline.length === 0) {
+    if (!options.createStage) {
+      return { stage: requestedStage };
+    }
+
+    const inserted = insertPipelineStage(office, {
+      name: requestedStage,
+      description: options.stageDescription || '',
+      assignedRoles: options.stageAssignedRoles ?? [],
+    }, {
+      beforeStage: options.beforeStage,
+      afterStage: options.afterStage,
+      position: options.position,
+    });
+    office.pipeline = inserted.pipeline;
+    office.updatedAt = new Date().toISOString();
+    await saveOffice(office);
+    return { stage: requestedStage };
+  }
+
+  const existing = findPipelineStage(office, requestedStage);
+  if (existing) {
+    return { stage: existing.name };
+  }
+
+  if (!options.createStage) {
+    return {
+      error: {
+        status: 400,
+        body: invalidStagePayload(requestedStage, getPipelineStageNames(office)),
+      },
+    };
+  }
+
+  try {
+    const inserted = insertPipelineStage(office, {
+      name: requestedStage,
+      description: options.stageDescription || '',
+      assignedRoles: options.stageAssignedRoles ?? [],
+    }, {
+      beforeStage: options.beforeStage,
+      afterStage: options.afterStage,
+      position: options.position,
+    });
+    office.pipeline = inserted.pipeline;
+    office.updatedAt = new Date().toISOString();
+    await saveOffice(office);
+    return { stage: requestedStage };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid stage placement';
+    return {
+      error: {
+        status: 400,
+        body: {
+          error: message,
+          errorCode: 'invalid_stage_placement',
+          stage: requestedStage,
+          validStages: getPipelineStageNames(office),
+        },
+      },
+    };
+  }
 }
 
 // GET /api/swarm/tasks — List tasks (filterable by ?stage=&assignedTo=&status=&priority=)
@@ -83,7 +210,8 @@ taskRoutes.post('/', async (req, res) => {
 
   const sender = getMember(senderSessionId)!;
   const { title, description, stage, assignedTo, priority, context, tags, parentTask, dependsOn, branch, prNumber, prUrl, issueNumber, issueUrl } = req.body;
-  if (!title || !stage) {
+  const requestedStage = normalizeStageInput(stage);
+  if (!title || !requestedStage) {
     return res.status(400).json({ error: "Missing 'title' or 'stage' field" });
   }
 
@@ -101,10 +229,17 @@ taskRoutes.post('/', async (req, res) => {
   }
 
   const shift = getShiftBySessionId(senderSessionId) ?? getActiveShift(sender.officeId);
+  const officeScopeId = sender.officeId || shift?.officeId || undefined;
+  const stageOptions = readStageCreationParams(req.body as Record<string, unknown>);
+  const stageResult = await ensureTaskStage(officeScopeId, requestedStage, stageOptions);
+  if (stageResult.error) {
+    return res.status(stageResult.error.status).json(stageResult.error.body);
+  }
+
   const task = await createTask({
     title,
     description,
-    stage,
+    stage: stageResult.stage!,
     assignedTo,
     priority,
     context,
@@ -116,7 +251,7 @@ taskRoutes.post('/', async (req, res) => {
     prUrl,
     issueNumber,
     issueUrl,
-    officeId: sender.officeId || shift?.officeId,
+    officeId: officeScopeId,
     createdBy: sender.agentName || 'Anonymous',
   });
 
@@ -156,6 +291,9 @@ taskRoutes.put('/:id', async (req, res) => {
 
   // Guard: don't allow reassignment of locked tasks (unless dashboard)
   const { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl } = req.body;
+  if (stage !== undefined && !normalizeStageInput(stage)) {
+    return res.status(400).json({ error: 'Stage cannot be empty' });
+  }
   if (assignedTo !== undefined) {
     const lock = getCheckoutLock(req.params.id);
     if (lock && lock.sessionId !== senderSessionId && !isDashboard) {
@@ -179,13 +317,39 @@ taskRoutes.put('/:id', async (req, res) => {
     }
   }
 
-  const task = await updateTask(req.params.id, { title, description, stage, assignedTo, status, priority, context, tags, parentTask, dependsOn, output, branch, prNumber, prUrl, issueNumber, issueUrl });
+  const stageOptions = readStageCreationParams(req.body as Record<string, unknown>);
+  const stageResult = await ensureTaskStage(existingTask.officeId, normalizeStageInput(stage), stageOptions);
+  if (stageResult.error) {
+    return res.status(stageResult.error.status).json(stageResult.error.body);
+  }
+
+  const task = await updateTask(req.params.id, {
+    title,
+    description,
+    stage: stageResult.stage,
+    assignedTo,
+    status,
+    priority,
+    context,
+    tags,
+    parentTask,
+    dependsOn,
+    output,
+    branch,
+    prNumber,
+    prUrl,
+    issueNumber,
+    issueUrl,
+  });
   if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  const refreshedTask = await getTask(req.params.id);
+  if (!refreshedTask) return res.status(404).json({ error: 'Task not found' });
 
   // Auto-spawn pending slot if newly assigned
   if (assignedTo) {
-    const updateShift = task.officeId
-      ? getActiveShift(task.officeId)
+    const updateShift = refreshedTask.officeId
+      ? getActiveShift(refreshedTask.officeId)
       : (senderSessionId
         ? (getShiftBySessionId(senderSessionId) ?? getActiveShift(getMember(senderSessionId)?.officeId))
         : null);
@@ -201,7 +365,7 @@ taskRoutes.put('/:id', async (req, res) => {
     }
   }
 
-  res.json(task);
+  res.json(refreshedTask);
 });
 
 // POST /api/swarm/tasks/:id/pick — Atomically checkout task + set to in-progress
@@ -304,6 +468,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   updates.completionReport = report;
   const task = await updateTask(req.params.id, updates);
   if (!task) return res.status(404).json({ error: 'Task not found' });
+  const officeScopeId = task.officeId || sender.officeId || undefined;
 
   // Release checkout lock on completion
   await releaseCheckout(req.params.id, senderSessionId);
@@ -311,7 +476,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   recordTaskSuccess(senderSessionId);
 
   // Notify lead with structured completion summary
-  const leadSessionId = getLeadSessionId(task.officeId || sender.officeId || undefined);
+  const leadSessionId = getLeadSessionId(officeScopeId);
   if (leadSessionId && leadSessionId !== senderSessionId) {
     const lines: string[] = [`[TASK COMPLETED]: "${task.title}" by ${sender.agentName}`];
     if (report.branch) lines.push(`  Branch: ${report.branch}`);
@@ -330,7 +495,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   }
 
   // Check for newly unblocked tasks and notify agents
-  const allTasks = await listTasks({ officeId: task.officeId });
+  const allTasks = await listTasks({ officeId: officeScopeId });
   const nowReady: Array<{ id: string; title: string; assignedTo?: string }> = [];
   for (const t of allTasks) {
     if (t.status !== 'open' || !t.dependsOn?.includes(task.id)) continue;
@@ -341,7 +506,7 @@ taskRoutes.post('/:id/done', async (req, res) => {
   if (nowReady.length > 0) {
     for (const ready of nowReady) {
       if (ready.assignedTo) {
-        const target = getMemberByName(ready.assignedTo, task.officeId || undefined);
+        const target = getMemberByName(ready.assignedTo, officeScopeId);
         if (target) {
           injectMessage(target.sessionId, `[SWARM SYSTEM]: Task "${ready.title}" (${ready.id}) is now unblocked — all dependencies are complete.`);
         }
@@ -482,8 +647,14 @@ taskRoutes.get('/locks', async (req, res) => {
 
 // GET /api/swarm/tasks/:id — Get a single task with dependency details
 taskRoutes.get('/:id', async (req, res) => {
+  const officeId = resolveOfficeId(req);
+  const existingTask = await getTask(req.params.id);
+  if (!existingTask || !taskMatchesOffice(existingTask, officeId)) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
   const task = await getTask(req.params.id);
-  if (!task || !taskMatchesOffice(task, resolveOfficeId(req))) {
+  if (!task || !taskMatchesOffice(task, officeId)) {
     return res.status(404).json({ error: 'Task not found' });
   }
 

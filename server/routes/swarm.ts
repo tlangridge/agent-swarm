@@ -16,6 +16,7 @@ import { getOfficeCostSummary, getGlobalCostSummary } from '../services/cost-tra
 import { listAvailableSkills } from '../services/skill-registry.js';
 import { appendFile } from '../services/workspace-files.js';
 import { getServerInstanceId } from '../services/instance-id.js';
+import { getOffice, saveOffice, getPipelineStageNames, insertPipelineStage, findPipelineStage } from '../services/office-store.js';
 
 export const swarmRoutes = Router();
 const SERVER_INSTANCE_ID = getServerInstanceId();
@@ -47,6 +48,15 @@ function formatBugContent(payload: unknown): string | null {
   if (workingPath) lines.push(`Working Path: ${workingPath}`);
 
   return lines.length > 0 ? lines.join('\n') : null;
+}
+
+async function resolveOfficeForRequest(sessionId: string | undefined) {
+  if (!sessionId) return null;
+  const member = getMember(sessionId);
+  if (member?.officeId) return getOffice(member.officeId);
+  const shift = getShiftBySessionId(sessionId);
+  if (shift?.officeId) return getOffice(shift.officeId);
+  return null;
 }
 
 // GET /api/swarm/activity — Summary of ALL agents' recent output
@@ -115,6 +125,81 @@ swarmRoutes.get('/dashboard', async (req, res) => {
 
   const agents = await getStructuredStatus(officeId);
   res.json({ agents, generatedAt: new Date().toISOString() });
+});
+
+// GET /api/swarm/pipeline — Current office pipeline
+swarmRoutes.get('/pipeline', async (req, res) => {
+  const sessionId = req.headers['x-session-id'] as string | undefined;
+  if (!sessionId || !getMember(sessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const office = await resolveOfficeForRequest(sessionId);
+  if (!office) {
+    return res.status(400).json({ error: 'No active office context' });
+  }
+
+  res.json({
+    officeId: office.id,
+    officeName: office.name,
+    pipeline: office.pipeline ?? [],
+  });
+});
+
+// POST /api/swarm/pipeline/stages — Explicitly add a pipeline stage
+swarmRoutes.post('/pipeline/stages', async (req, res) => {
+  const sessionId = req.headers['x-session-id'] as string | undefined;
+  if (!sessionId || !getMember(sessionId)) {
+    return res.status(401).json({ error: 'Invalid or missing X-Session-Id header' });
+  }
+
+  const office = await resolveOfficeForRequest(sessionId);
+  if (!office) {
+    return res.status(400).json({ error: 'No active office context' });
+  }
+
+  const rawName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  if (!rawName) {
+    return res.status(400).json({ error: 'Missing stage name' });
+  }
+
+  const existing = findPipelineStage(office, rawName);
+  if (existing) {
+    return res.json({ created: false, stage: existing, pipeline: office.pipeline ?? [] });
+  }
+
+  try {
+    const result = insertPipelineStage(office, {
+      name: rawName,
+      description: typeof req.body?.description === 'string' ? req.body.description : '',
+      assignedRoles: Array.isArray(req.body?.assignedRoles)
+        ? req.body.assignedRoles.filter((value: unknown): value is FunctionalRole => typeof value === 'string')
+        : [],
+    }, {
+      beforeStage: typeof req.body?.beforeStage === 'string' ? req.body.beforeStage.trim() : undefined,
+      afterStage: typeof req.body?.afterStage === 'string' ? req.body.afterStage.trim() : undefined,
+      position: typeof req.body?.position === 'number'
+        ? req.body.position
+        : (typeof req.body?.position === 'string' && req.body.position.trim() !== '' ? Number(req.body.position) : undefined),
+    });
+
+    office.pipeline = result.pipeline;
+    office.updatedAt = new Date().toISOString();
+    await saveOffice(office);
+
+    res.status(201).json({
+      created: true,
+      stage: findPipelineStage(office, rawName),
+      pipeline: office.pipeline ?? [],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid stage placement';
+    res.status(400).json({
+      error: message,
+      errorCode: 'invalid_stage_placement',
+      validStages: getPipelineStageNames(office),
+    });
+  }
 });
 
 // GET /api/swarm/costs — Cost summary (per-office or global)

@@ -204,13 +204,18 @@ function shutdown() {
     console.error(`Failed to persist session state on shutdown: ${message}`);
   }
   killAll();
-  const forceExit = setTimeout(() => process.exit(0), 1000);
+  let pendingClosures = 2;
+  const finishShutdown = () => {
+    pendingClosures -= 1;
+    if (pendingClosures <= 0) {
+      clearTimeout(forceExit);
+      process.exit(0);
+    }
+  };
+  const forceExit = setTimeout(() => process.exit(0), 2000);
   forceExit.unref();
-  wss.close();
-  server.close(() => {
-    clearTimeout(forceExit);
-    process.exit(0);
-  });
+  wss.close(finishShutdown);
+  server.close(finishShutdown);
 }
 
 process.on('SIGTERM', shutdown);

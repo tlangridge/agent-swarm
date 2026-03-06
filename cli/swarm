@@ -151,6 +151,50 @@ cmd_task() {
   esac
 }
 
+cmd_pipeline() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    list) api_get_auth "/api/swarm/pipeline" ;;
+    add-stage) cmd_pipeline_add_stage "$@" ;;
+    *) echo "Usage: swarm pipeline <list|add-stage> [args]" >&2; exit 1 ;;
+  esac
+}
+
+cmd_pipeline_add_stage() {
+  local name="" description="" roles="" before="" after="" position=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --desc|--description) description="$2"; shift 2 ;;
+      --roles) roles="$2"; shift 2 ;;
+      --before) before="$2"; shift 2 ;;
+      --after) after="$2"; shift 2 ;;
+      --position) position="$2"; shift 2 ;;
+      -*) echo "Unknown flag: $1" >&2; exit 1 ;;
+      *) [ -z "$name" ] && name="$1"; shift ;;
+    esac
+  done
+
+  [ -z "$name" ] && { echo "Usage: swarm pipeline add-stage <name> [--before STAGE|--after STAGE|--position N] [--desc TEXT] [--roles r1,r2]" >&2; exit 1; }
+
+  local body="{\"name\":$(json_string "$name")"
+  [ -n "$description" ] && body="$body,\"description\":$(json_string "$description")"
+  [ -n "$before" ] && body="$body,\"beforeStage\":$(json_string "$before")"
+  [ -n "$after" ] && body="$body,\"afterStage\":$(json_string "$after")"
+  [ -n "$position" ] && body="$body,\"position\":$position"
+  if [ -n "$roles" ]; then
+    local role_array="[" first=1
+    IFS=',' read -ra ROLE_IDS <<< "$roles"
+    for role in "${ROLE_IDS[@]}"; do
+      [ "$first" = "1" ] && first=0 || role_array="$role_array,"
+      role_array="$role_array$(json_string "$role")"
+    done
+    role_array="$role_array]"
+    body="$body,\"assignedRoles\":$role_array"
+  fi
+  api_post "/api/swarm/pipeline/stages" "$body}"
+}
+
 cmd_task_verify() {
   local id=""
   local cmd_args=()
@@ -198,7 +242,7 @@ cmd_task_deps() {
 }
 
 cmd_task_create() {
-  local title="" stage="" assign="" priority="" desc="" branch="" depends=""
+  local title="" stage="" assign="" priority="" desc="" branch="" depends="" create_stage="" before="" after="" position=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --stage)    stage="$2"; shift 2 ;;
@@ -207,17 +251,25 @@ cmd_task_create() {
       --desc)     desc="$2"; shift 2 ;;
       --branch)   branch="$2"; shift 2 ;;
       --depends)  depends="$2"; shift 2 ;;
+      --create-stage) create_stage="1"; shift ;;
+      --before)   before="$2"; shift 2 ;;
+      --after)    after="$2"; shift 2 ;;
+      --position) position="$2"; shift 2 ;;
       -*) echo "Unknown flag: $1" >&2; exit 1 ;;
       *)  [ -z "$title" ] && title="$1"; shift ;;
     esac
   done
-  [ -z "$title" ] && { echo "Usage: swarm task create <title> [--stage S] [--assign A] [--priority P] [--desc D] [--branch B] [--depends id1,id2]" >&2; exit 1; }
+  [ -z "$title" ] && { echo "Usage: swarm task create <title> [--stage S] [--assign A] [--priority P] [--desc D] [--branch B] [--depends id1,id2] [--create-stage --before S|--after S|--position N]" >&2; exit 1; }
   local body="{\"title\":$(json_string "$title")"
   [ -n "$stage" ]    && body="$body,\"stage\":$(json_string "$stage")"
   [ -n "$assign" ]   && body="$body,\"assignedTo\":$(json_string "$assign")"
   [ -n "$priority" ] && body="$body,\"priority\":$(json_string "$priority")"
   [ -n "$desc" ]     && body="$body,\"description\":$(json_string "$desc")"
   [ -n "$branch" ]   && body="$body,\"branch\":$(json_string "$branch")"
+  [ -n "$create_stage" ] && body="$body,\"createStage\":true"
+  [ -n "$before" ]   && body="$body,\"beforeStage\":$(json_string "$before")"
+  [ -n "$after" ]    && body="$body,\"afterStage\":$(json_string "$after")"
+  [ -n "$position" ] && body="$body,\"position\":$position"
   if [ -n "$depends" ]; then
     local dep_array="["
     local first=1
@@ -234,9 +286,9 @@ cmd_task_create() {
 
 cmd_task_update() {
   local id="${1:-}"
-  [ -z "$id" ] && { echo "Usage: swarm task update <id> [--status S] [--assign A] [--stage S] [--branch B] [--pr N] [--pr-url U] [--issue N] [--issue-url U]" >&2; exit 1; }
+  [ -z "$id" ] && { echo "Usage: swarm task update <id> [--status S] [--assign A] [--stage S] [--branch B] [--pr N] [--pr-url U] [--issue N] [--issue-url U] [--create-stage --before S|--after S|--position N]" >&2; exit 1; }
   shift
-  local status="" assign="" stage="" branch="" pr="" pr_url="" issue="" issue_url=""
+  local status="" assign="" stage="" branch="" pr="" pr_url="" issue="" issue_url="" create_stage="" before="" after="" position=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --status)    status="$2"; shift 2 ;;
@@ -247,6 +299,10 @@ cmd_task_update() {
       --pr-url)    pr_url="$2"; shift 2 ;;
       --issue)     issue="$2"; shift 2 ;;
       --issue-url) issue_url="$2"; shift 2 ;;
+      --create-stage) create_stage="1"; shift ;;
+      --before)   before="$2"; shift 2 ;;
+      --after)    after="$2"; shift 2 ;;
+      --position) position="$2"; shift 2 ;;
       -*) echo "Unknown flag: $1" >&2; exit 1 ;;
       *)  shift ;;
     esac
@@ -254,6 +310,7 @@ cmd_task_update() {
   local body="{" first=1
   add_field() { [ "$first" = "1" ] && first=0 || body="$body,"; body="$body\"$1\":$(json_string "$2")"; }
   add_num() { [ "$first" = "1" ] && first=0 || body="$body,"; body="$body\"$1\":$2"; }
+  add_bool() { [ "$first" = "1" ] && first=0 || body="$body,"; body="$body\"$1\":$2"; }
   [ -n "$status" ]    && add_field "status" "$status"
   [ -n "$assign" ]    && add_field "assignedTo" "$assign"
   [ -n "$stage" ]     && add_field "stage" "$stage"
@@ -262,6 +319,10 @@ cmd_task_update() {
   [ -n "$pr_url" ]    && add_field "prUrl" "$pr_url"
   [ -n "$issue" ]     && add_num "issueNumber" "$issue"
   [ -n "$issue_url" ] && add_field "issueUrl" "$issue_url"
+  [ -n "$create_stage" ] && add_bool "createStage" "true"
+  [ -n "$before" ]    && add_field "beforeStage" "$before"
+  [ -n "$after" ]     && add_field "afterStage" "$after"
+  [ -n "$position" ]  && add_num "position" "$position"
   api_put "/api/swarm/tasks/$id" "$body}"
 }
 
@@ -485,6 +546,9 @@ COMMANDS
   cron delete <id>                 Delete a cron job
   cron toggle <id>                 Enable/disable a cron job
 
+  pipeline list                    List current office pipeline stages
+  pipeline add-stage [opts]        Add a pipeline stage explicitly
+
   worktrees                        Show worktree overview with agent assignments
   files [path]                     List or browse shared files
   read <path>                      Read a shared file
@@ -510,14 +574,17 @@ EOF
     activity)  echo "swarm activity [agent] [--lines N]"; echo "  All agents: GET /api/swarm/activity"; echo "  One agent:  GET /api/swarm/activity/<name>?lines=N (default 50, max 200). Requires SID." ;;
     spawn)     echo "swarm spawn <name> [--task \"...\"]"; echo "  POST /api/swarm/spawn -- spawn or relaunch agent. --task sends initial message. Requires SID." ;;
     tasks)     echo "swarm tasks [--mine] [--status X]"; echo "  GET /api/swarm/tasks -- --mine passes assignedTo=_self, --status filters (open|in-progress|blocked|done)." ;;
-    task)      echo "swarm task create <title> [--stage S] [--assign A] [--priority P] [--desc D] [--branch B] [--depends id1,id2]"
-               echo "swarm task update <id> [--status S] [--assign A] [--stage S] [--branch B] [--pr N] [--pr-url U] [--issue N] [--issue-url U]"
+    task)      echo "swarm task create <title> [--stage S] [--assign A] [--priority P] [--desc D] [--branch B] [--depends id1,id2] [--create-stage --before S|--after S|--position N]"
+               echo "swarm task update <id> [--status S] [--assign A] [--stage S] [--branch B] [--pr N] [--pr-url U] [--issue N] [--issue-url U] [--create-stage --before S|--after S|--position N]"
                echo "swarm task pick <id>   -- assign to self + in-progress (blocked if deps unmet)"
                echo "swarm task done <id> [--output \"...\"]  -- mark done with optional output for downstream tasks"
                echo "swarm task fail <id> [reason]  -- mark task blocked/failed"
                echo "swarm task deps <id>   -- show task details and dependencies" ;;
     cron)      echo "swarm cron list"; echo "swarm cron create --name N --schedule S --prompt P [--target-role R] [--target-agent A]"
                echo "swarm cron delete <id>"; echo "swarm cron toggle <id>" ;;
+    pipeline)  echo "swarm pipeline list"
+               echo "swarm pipeline add-stage <name> [--before STAGE|--after STAGE|--position N] [--desc TEXT] [--roles role1,role2]"
+               echo "swarm task create/update ... --create-stage --before STAGE|--after STAGE|--position N" ;;
     files)     echo "swarm files [path]"; echo "  GET /api/swarm/files[/<path>] -- list or browse shared files." ;;
     read)      echo "swarm read <path>"; echo "  GET /api/swarm/files/<path> -- read file contents." ;;
     write)     echo "swarm write <path> --content \"...\""; echo "  PUT /api/swarm/files/<path> -- also reads stdin: echo hi | swarm write f.txt" ;;
@@ -546,6 +613,7 @@ case "$cmd" in
   tasks)     cmd_tasks "$@" ;;
   task)      cmd_task "$@" ;;
   cron)      cmd_cron "$@" ;;
+  pipeline)  cmd_pipeline "$@" ;;
   worktrees) cmd_worktrees "$@" ;;
   files)     cmd_files "$@" ;;
   read)      cmd_read "$@" ;;

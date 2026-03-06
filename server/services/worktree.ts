@@ -99,6 +99,58 @@ function validateBranchName(branch: string): void {
   }
 }
 
+function findRegisteredWorktreeByPath(repoPath: string, worktreePath: string): WorktreeInfo | null {
+  const targetPath = normalizeFsPath(worktreePath);
+  return listWorktrees(repoPath).find(wt => normalizeFsPath(wt.path) === targetPath) ?? null;
+}
+
+function findRegisteredWorktreeByBranch(repoPath: string, branch: string): WorktreeInfo | null {
+  return listWorktrees(repoPath).find(wt => wt.branch === branch) ?? null;
+}
+
+function isValidCommitish(repoPath: string, ref: string): boolean {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], {
+      cwd: repoPath,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveWorktreeBaseRef(repoPath: string, baseBranch?: string): string | null {
+  const candidates: string[] = [];
+  if (baseBranch) {
+    candidates.push(baseBranch);
+    if (!baseBranch.startsWith('refs/')) {
+      candidates.push(`refs/heads/${baseBranch}`);
+      candidates.push(`refs/remotes/origin/${baseBranch}`);
+    }
+  }
+  candidates.push('HEAD', 'refs/heads/main', 'refs/heads/master');
+
+  try {
+    const remoteHead = execFileSync('git', ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (remoteHead) candidates.push(remoteHead);
+  } catch {
+    // No remote HEAD configured.
+  }
+
+  for (const candidate of candidates) {
+    if (candidate && isValidCommitish(repoPath, candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 export function createWorktree(
   repoPath: string,
   branch: string,
@@ -108,9 +160,25 @@ export function createWorktree(
 
   const baseDir = getWorktreeBaseDir(repoPath);
   const worktreePath = path.join(baseDir, branch);
+  const registeredByBranch = findRegisteredWorktreeByBranch(repoPath, branch);
+  if (registeredByBranch) {
+    return registeredByBranch;
+  }
+
+  const registeredByPath = findRegisteredWorktreeByPath(repoPath, worktreePath);
+  if (registeredByPath) {
+    if (registeredByPath.branch !== branch) {
+      throw new Error(
+        `Worktree path ${worktreePath} is already registered to branch ${registeredByPath.branch}`,
+      );
+    }
+    return registeredByPath;
+  }
 
   if (existsSync(worktreePath)) {
-    throw new Error(`Worktree path already exists: ${worktreePath}`);
+    throw new Error(
+      `Worktree path already exists on disk but is not a registered git worktree: ${worktreePath}`,
+    );
   }
 
   // Check if branch already exists
@@ -133,7 +201,12 @@ export function createWorktree(
     });
   } else {
     // Create new branch and worktree
-    const base = baseBranch || 'HEAD';
+    const base = resolveWorktreeBaseRef(repoPath, baseBranch);
+    if (!base) {
+      throw new Error(
+        `Repository at ${repoPath} has no committed base revision; cannot create worktree branch ${branch}`,
+      );
+    }
     execFileSync('git', ['worktree', 'add', '-b', branch, worktreePath, base], {
       cwd: repoPath,
       encoding: 'utf-8',
@@ -159,7 +232,13 @@ export function removeWorktree(repoPath: string, branch: string): void {
   const baseDir = getWorktreeBaseDir(repoPath);
   const worktreePath = path.join(baseDir, branch);
 
-  execFileSync('git', ['worktree', 'remove', worktreePath], {
+  const registered = findRegisteredWorktreeByPath(repoPath, worktreePath)
+    ?? findRegisteredWorktreeByBranch(repoPath, branch);
+  if (!registered) {
+    return;
+  }
+
+  execFileSync('git', ['worktree', 'remove', registered.path], {
     cwd: repoPath,
     encoding: 'utf-8',
   });

@@ -112,6 +112,20 @@ export function getLeadSessionIdForOffice(officeId: string): string | null {
   return null;
 }
 
+/**
+ * Office coordinator routing:
+ * 1) Product Manager (if present) handles day-to-day coordination
+ * 2) Fallback to lead when no PM is active
+ */
+export function getCoordinatorSessionIdForOffice(officeId: string): string | null {
+  for (const m of members.values()) {
+    if (m.officeId === officeId && m.functionalRole === 'product-manager') {
+      return m.sessionId;
+    }
+  }
+  return getLeadSessionIdForOffice(officeId);
+}
+
 // ── Circuit breaker ──────────────────────────────────────────────────────────
 
 const CIRCUIT_BREAKER_THRESHOLD = 3;         // consecutive failures to open

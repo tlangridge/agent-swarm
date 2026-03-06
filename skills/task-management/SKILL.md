@@ -21,6 +21,12 @@ open -> in-progress -> done
 - **blocked** -- Work cannot continue (dependency unmet, error encountered)
 - **done** -- Work completed and verified
 
+## Ownership Model
+
+- If a PM is present, PM owns day-to-day board operations (create/assign/reprioritize/follow-up).
+- Tech Lead keeps strategic oversight and intervenes for high-level decisions or risk correction.
+- If no PM is present, lead handles board operations directly.
+
 ## Task Commands
 
 ### Viewing Tasks

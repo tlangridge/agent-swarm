@@ -27,6 +27,7 @@ interface PersistedSession {
   swarmRole: SwarmRole;
   functionalRole: FunctionalRole | null;
   joinedAt: string;
+  compactionCount: number;
 }
 
 interface PersistedState {
@@ -168,6 +169,7 @@ function serializeState(): PersistedState {
       swarmRole: member?.role ?? 'worker',
       functionalRole: member?.functionalRole ?? null,
       joinedAt: member?.joinedAt ?? new Date().toISOString(),
+      compactionCount: session.compactionCount,
     });
   }
 
@@ -225,6 +227,7 @@ function parseState(raw: string): PersistedState | null {
         swarmRole: candidate.swarmRole,
         functionalRole: (candidate as any).functionalRole ?? null,
         joinedAt: candidate.joinedAt,
+        compactionCount: typeof candidate.compactionCount === 'number' ? candidate.compactionCount : 0,
       });
     }
 
@@ -398,6 +401,7 @@ export async function restorePersistedState(filterSessionIds?: string[]): Promis
       if (!Number.isNaN(restoredCreatedAt.valueOf())) {
         session.createdAt = restoredCreatedAt;
       }
+      session.compactionCount = snapshot.compactionCount;
 
       addMember({
         sessionId: snapshot.id,

@@ -1,35 +1,50 @@
 import { useState, useRef, useEffect } from 'react';
 
-type BroadcastTarget = 'all' | 'lead';
+type BroadcastTarget = 'all' | 'direct';
 
 interface BroadcastBarProps {
   sessionCount: number;
-  leadSessionId: string | null;
-  leadAgentName: string | null;
+  targetSessionId: string | null;
+  targetLabel: string | null;
   onBroadcast: (text: string) => void;
-  onSendToLead: (text: string) => void;
+  onSendToSession: (sessionId: string, text: string) => void;
   officeName?: string;
 }
 
-export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentName, onBroadcast, onSendToLead, officeName }: BroadcastBarProps) {
+export default function BroadcastBar({
+  sessionCount,
+  targetSessionId,
+  targetLabel,
+  onBroadcast,
+  onSendToSession,
+  officeName,
+}: BroadcastBarProps) {
   const [text, setText] = useState('');
-  const [target, setTarget] = useState<BroadcastTarget>(leadSessionId ? 'lead' : 'all');
+  const [target, setTarget] = useState<BroadcastTarget>(targetSessionId ? 'direct' : 'all');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const prevTargetSessionIdRef = useRef<string | null>(targetSessionId);
 
-  // Default to lead when one becomes available; fall back to all when lead disappears
+  // Auto-select direct target when the direct recipient changes (e.g. focus switch),
+  // but allow manual "All" selection while the recipient remains unchanged.
   useEffect(() => {
-    if (leadSessionId && target === 'all') {
-      setTarget('lead');
-    } else if (!leadSessionId && target === 'lead') {
-      setTarget('all');
+    const prevTargetSessionId = prevTargetSessionIdRef.current;
+    prevTargetSessionIdRef.current = targetSessionId;
+
+    if (!targetSessionId) {
+      setTarget(current => current === 'direct' ? 'all' : current);
+      return;
     }
-  }, [leadSessionId, target]);
+
+    if (targetSessionId !== prevTargetSessionId) {
+      setTarget('direct');
+    }
+  }, [targetSessionId]);
 
   const handleSend = () => {
     const trimmed = text.trim();
     if (!trimmed || sessionCount === 0) return;
-    if (target === 'lead' && leadSessionId) {
-      onSendToLead(trimmed);
+    if (target === 'direct' && targetSessionId) {
+      onSendToSession(targetSessionId, trimmed);
     } else {
       onBroadcast(trimmed);
     }
@@ -44,19 +59,19 @@ export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentNam
     }
   };
 
-  const leadLabel = leadAgentName ? `Lead: ${leadAgentName}` : 'Lead';
+  const directLabel = targetLabel || 'Direct';
 
   return (
     <div className="broadcast-bar">
       <div className="broadcast-label-row">
         <div className="broadcast-target-toggle">
           <button
-            className={`broadcast-target-btn ${target === 'lead' ? 'active' : ''}`}
-            onClick={() => setTarget('lead')}
-            disabled={!leadSessionId}
-            title={leadSessionId ? `Send to ${leadAgentName || 'lead agent'}` : 'No lead agent designated'}
+            className={`broadcast-target-btn ${target === 'direct' ? 'active' : ''}`}
+            onClick={() => setTarget('direct')}
+            disabled={!targetSessionId}
+            title={targetSessionId ? `Send to ${targetLabel || 'target agent'}` : 'No direct target available'}
           >
-            {leadLabel}
+            {directLabel}
           </button>
           <button
             className={`broadcast-target-btn ${target === 'all' ? 'active' : ''}`}
@@ -73,7 +88,7 @@ export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentNam
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={sessionCount === 0 ? 'No active sessions...' : target === 'lead' ? `Message ${leadAgentName || 'lead'}...` : officeName ? `Message to ${officeName} team (${sessionCount} agents)...` : `Broadcast to all agents (${sessionCount})...`}
+          placeholder={sessionCount === 0 ? 'No active sessions...' : target === 'direct' ? `Message ${targetLabel || 'target'}...` : officeName ? `Message to ${officeName} team (${sessionCount} agents)...` : `Broadcast to all agents (${sessionCount})...`}
           disabled={sessionCount === 0}
           rows={1}
         />
@@ -82,7 +97,7 @@ export default function BroadcastBar({ sessionCount, leadSessionId, leadAgentNam
           onClick={handleSend}
           disabled={!text.trim() || sessionCount === 0}
         >
-          {target === 'lead' ? 'Send' : 'Send All'}
+          {target === 'direct' ? 'Send' : 'Send All'}
         </button>
       </div>
     </div>

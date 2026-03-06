@@ -64,6 +64,7 @@ export default function AgentCard({
   const lastAction = structuredStatus?.lastAction;
   const recentFiles = structuredStatus?.recentFiles ?? [];
   const circuitOpen = structuredStatus?.circuitState === 'open';
+  const compactionCount = Math.max(structuredStatus?.compactionCount ?? 0, session.compactionCount ?? 0);
 
   return (
     <div className="agent-card" onClick={onFocus}>
@@ -90,6 +91,9 @@ export default function AgentCard({
         {circuitOpen && (
           <span className="agent-card-circuit-badge">CIRCUIT OPEN</span>
         )}
+        <span className="agent-card-compaction" title={`Compactions: ${compactionCount}`}>
+          C{compactionCount}
+        </span>
         <span className="agent-card-idle">{idleStr}</span>
       </div>
 

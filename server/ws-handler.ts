@@ -143,6 +143,17 @@ function accumScrollback(session: PtySession, data: string): void {
   if (/[Cc]ompacted/.test(data)) {
     session.compactionCount++;
     onCompaction(session.id, session.compactionCount);
+    const payload = {
+      type: 'session:compaction',
+      sessionId: session.id,
+      compactionCount: session.compactionCount,
+      officeId: session.officeId || null,
+    };
+    if (session.officeId) {
+      broadcastToOffice(session.officeId, payload);
+    } else {
+      broadcastToAll(payload);
+    }
   }
 
   // Detect cost updates from Claude Code output
@@ -218,8 +229,22 @@ export function activateSessionStreaming(): void {
 swarmEvents.on('session:spawned', ({ sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole, worktreeBranch, officeId }) => {
   if (!sessions.has(sessionId)) return;
   bridgeSession(sessionId);
+  const session = sessions.get(sessionId);
 
-  const payload = { type: 'session:spawned', sessionId, agentId, agentName, agentEmail, cliType, executionMode, swarmRole, functionalRole: functionalRole || null, worktreeBranch: worktreeBranch || null, officeId: officeId || null };
+  const payload = {
+    type: 'session:spawned',
+    sessionId,
+    agentId,
+    agentName,
+    agentEmail,
+    cliType,
+    executionMode,
+    swarmRole,
+    functionalRole: functionalRole || null,
+    worktreeBranch: worktreeBranch || null,
+    officeId: officeId || null,
+    compactionCount: session?.compactionCount ?? 0,
+  };
   if (officeId) {
     broadcastToOffice(officeId, payload);
   } else {
@@ -249,6 +274,7 @@ export function handleWebSocket(ws: WebSocket): void {
       functionalRole: member?.functionalRole || null,
       worktreeBranch: session.worktreeBranch || null,
       officeId: session.officeId || null,
+      compactionCount: session.compactionCount,
       scrollback: session.scrollback || undefined,
     });
   }

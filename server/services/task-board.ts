@@ -59,6 +59,39 @@ export interface TaskFilters {
   officeId?: string;
 }
 
+function normalizeTaskStatus(status: TaskItem['status'] | string | undefined): TaskItem['status'] | undefined {
+  if (!status) return undefined;
+  if (status === 'archived') return 'done';
+  if (status === 'in_progress') return 'in-progress';
+  if (status === 'open' || status === 'in-progress' || status === 'blocked' || status === 'done') {
+    return status;
+  }
+  return undefined;
+}
+
+function normalizeTask(task: TaskItem): TaskItem {
+  return {
+    ...task,
+    stage: typeof task.stage === 'string' ? task.stage.trim() : task.stage,
+    status: normalizeTaskStatus(task.status) ?? 'open',
+  };
+}
+
+async function getBlockingDependencyIds(task: TaskItem, taskCache?: Map<string, TaskItem>): Promise<string[]> {
+  if (!task.dependsOn || task.dependsOn.length === 0) {
+    return [];
+  }
+
+  const blocking: string[] = [];
+  for (const depId of task.dependsOn) {
+    const dep = taskCache?.get(depId) ?? await getTask(depId);
+    if (!dep || dep.status !== 'done') {
+      blocking.push(depId);
+    }
+  }
+  return blocking;
+}
+
 async function ensureDir(): Promise<void> {
   await fs.mkdir(TASKS_DIR, { recursive: true });
 }
@@ -99,9 +132,7 @@ export async function listTasks(filters?: TaskFilters): Promise<TaskItem[]> {
     if (!f.endsWith('.json')) continue;
     try {
       const data = await fs.readFile(path.join(TASKS_DIR, f), 'utf-8');
-      const task = JSON.parse(data);
-      // Normalize "archived" → "done" (agents sometimes use "archived")
-      if (task.status === 'archived') task.status = 'done';
+      const task = normalizeTask(JSON.parse(data));
       result.push(task);
     } catch (err) {
       console.error(`task-board: failed to parse ${f}, skipping:`, err);
@@ -128,7 +159,7 @@ export async function listTasks(filters?: TaskFilters): Promise<TaskItem[]> {
 export async function getTask(id: string): Promise<TaskItem | undefined> {
   try {
     const data = await fs.readFile(taskFilePath(id), 'utf-8');
-    return JSON.parse(data);
+    return normalizeTask(JSON.parse(data));
   } catch {
     return undefined;
   }
@@ -194,9 +225,9 @@ export async function updateTask(
 
     if (updates.title !== undefined) task.title = updates.title;
     if (updates.description !== undefined) task.description = updates.description;
-    if (updates.stage !== undefined) task.stage = updates.stage;
+    if (updates.stage !== undefined) task.stage = updates.stage.trim();
     if (updates.assignedTo !== undefined) task.assignedTo = updates.assignedTo;
-    if (updates.status !== undefined) task.status = (updates.status as string) === 'archived' ? 'done' : updates.status;
+    if (updates.status !== undefined) task.status = normalizeTaskStatus(updates.status) ?? task.status;
     if (updates.priority !== undefined) task.priority = updates.priority;
     if (updates.context !== undefined) task.context = updates.context;
     if (updates.tags !== undefined) task.tags = updates.tags;
@@ -272,13 +303,7 @@ export async function areDependenciesMet(taskId: string): Promise<{ met: boolean
   if (!task?.dependsOn || task.dependsOn.length === 0) {
     return { met: true, blocking: [] };
   }
-  const blocking: string[] = [];
-  for (const depId of task.dependsOn) {
-    const dep = await getTask(depId);
-    if (!dep || dep.status !== 'done') {
-      blocking.push(depId);
-    }
-  }
+  const blocking = await getBlockingDependencyIds(task);
   return { met: blocking.length === 0, blocking };
 }
 

@@ -152,6 +152,14 @@ export default function App() {
     return filtered;
   }, [sessions, focusedOfficeId]);
 
+  const compactionCountsBySession = useMemo(() => {
+    const next = new Map<string, number>();
+    for (const [sessionId, session] of sessions) {
+      next.set(sessionId, session.compactionCount ?? 0);
+    }
+    return next;
+  }, [sessions]);
+
   // Get layout for focused office
   const layout = focusedOfficeId ? layouts.get(focusedOfficeId) ?? null : null;
 
@@ -367,6 +375,7 @@ export default function App() {
               swarmRole: pending?.swarmRole ?? 'worker',
               functionalRole: pending?.functionalRole ?? null,
               worktreeBranch: pending?.worktreeBranch,
+              compactionCount: 0,
             };
             setSessions(prev => {
               const next = new Map(prev);
@@ -456,6 +465,7 @@ export default function App() {
               functionalRole: msg.functionalRole,
               worktreeBranch: msg.worktreeBranch || undefined,
               officeId: msg.officeId || focusedOfficeIdRef.current || undefined,
+              compactionCount: msg.compactionCount ?? 0,
             };
             setSessions(prev => {
               const next = new Map(prev);
@@ -477,6 +487,7 @@ export default function App() {
               functionalRole: msg.functionalRole,
               worktreeBranch: msg.worktreeBranch || undefined,
               officeId: msg.officeId || undefined,
+              compactionCount: msg.compactionCount ?? 0,
             };
             setSessions(prev => {
               const next = new Map(prev);
@@ -497,6 +508,19 @@ export default function App() {
               outputPreviewsRef.current.set(msg.sessionId, lines);
               lastActivityRef.current.set(msg.sessionId, Date.now());
             }
+            break;
+          }
+
+          case 'session:compaction': {
+            setSessions(prev => {
+              const next = new Map(prev);
+              const session = next.get(msg.sessionId);
+              if (!session || session.compactionCount === msg.compactionCount) {
+                return prev;
+              }
+              next.set(msg.sessionId, { ...session, compactionCount: msg.compactionCount });
+              return next;
+            });
             break;
           }
 
@@ -783,11 +807,9 @@ export default function App() {
     }
   }, [sessions, sendWs]);
 
-  const handleSendToLead = useCallback((text: string) => {
-    if (leadSessionId) {
-      sendWs({ type: 'inject', sessionId: leadSessionId, text });
-    }
-  }, [leadSessionId, sendWs]);
+  const handleSendToSession = useCallback((sessionId: string, text: string) => {
+    sendWs({ type: 'inject', sessionId, text });
+  }, [sendWs]);
 
   const handleSetRole = useCallback((sessionId: string, role: SwarmRole) => {
     sendWs({ type: 'set-role', sessionId, role });
@@ -829,7 +851,17 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [focusedSessionId]);
 
-  const leadAgentName = leadSessionId ? sessions.get(leadSessionId)?.agentName ?? null : null;
+  const leadAgentName = leadSessionId
+    ? sessionsForOffice.get(leadSessionId)?.agentName ?? sessions.get(leadSessionId)?.agentName ?? null
+    : null;
+  const focusedTargetSessionId = focusedSessionId && sessionsForOffice.has(focusedSessionId)
+    ? focusedSessionId
+    : null;
+  const focusedTargetSession = focusedTargetSessionId ? sessionsForOffice.get(focusedTargetSessionId) : null;
+  const directMessageSessionId = focusedTargetSessionId || leadSessionId;
+  const directMessageLabel = focusedTargetSessionId
+    ? `Agent: ${focusedTargetSession?.agentName || focusedTargetSession?.cliType || focusedTargetSessionId}`
+    : (leadSessionId ? `Lead: ${leadAgentName || 'lead'}` : null);
 
   const getTitle = useCallback((id: string): string => {
     const session = sessions.get(id);
@@ -985,6 +1017,7 @@ export default function App() {
         <ShiftStatusBar
           shift={activeShift}
           totalShiftCost={totalShiftCost}
+          compactionCountsBySession={compactionCountsBySession}
           onBadgeOut={handleBadgeOut}
           onCloseShift={handleCloseShift}
         />
@@ -1016,7 +1049,8 @@ export default function App() {
                 />
               </div>
             ) : sessionsForOffice.size === 0 ? (
-              <div className="empty-state">
+              <div className="office-screen">
+                <div className="office-screen-scroll">
                 {selectedOfficeId && selectedOffice ? (
                   <div className="office-detail-view">
                     <div className="office-detail-header">
@@ -1048,7 +1082,7 @@ export default function App() {
                         Start Shift
                       </button>
                     )}
-                    <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #1a1b26' }}>
+                    <div className="office-screen-actions">
                       <button className="primary-btn" onClick={handleOpenPicker}>
                         + Add Agent Manually
                       </button>
@@ -1069,13 +1103,14 @@ export default function App() {
                       onRefresh={fetchOffices}
                       onSelectOffice={setSelectedOfficeId}
                     />
-                    <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #1a1b26' }}>
+                    <div className="office-screen-actions">
                       <button className="primary-btn" onClick={handleOpenPicker}>
                         + Add Agent Manually
                       </button>
                     </div>
                   </>
                 )}
+              </div>
               </div>
             ) : focusedSessionId && sessions.has(focusedSessionId) ? (
               <div className="focused-split-view">
@@ -1157,6 +1192,7 @@ export default function App() {
                       const preview = outputPreviews.get(sid) || [];
                       const agentTasks = sess.agentName ? tasks.filter(t => t.assignedTo === sess.agentName) : [];
                       const currentTask = agentTasks.find(t => t.status === 'in-progress') || agentTasks.find(t => t.status === 'open');
+                      const compactionCount = sess.compactionCount ?? 0;
 
                       return (
                         <div
@@ -1187,6 +1223,9 @@ export default function App() {
                                 {FUNCTIONAL_ROLE_LABELS[fr]}
                               </span>
                             )}
+                            <span className="sidebar-agent-compaction" title={`Compactions: ${compactionCount}`}>
+                              C{compactionCount}
+                            </span>
                             <span className="sidebar-agent-idle">{idleLabel}</span>
                           </div>
                           {currentTask && (
@@ -1300,10 +1339,10 @@ export default function App() {
 
       <BroadcastBar
         sessionCount={sessionsForOffice.size}
-        leadSessionId={leadSessionId}
-        leadAgentName={leadAgentName}
+        targetSessionId={directMessageSessionId}
+        targetLabel={directMessageLabel}
         onBroadcast={handleBroadcast}
-        onSendToLead={handleSendToLead}
+        onSendToSession={handleSendToSession}
         officeName={activeShift?.officeName}
       />
 

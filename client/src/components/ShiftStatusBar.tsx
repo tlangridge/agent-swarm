@@ -5,11 +5,12 @@ import { FUNCTIONAL_ROLE_COLORS, FUNCTIONAL_ROLE_LABELS } from '../types';
 interface Props {
   shift: ShiftState;
   totalShiftCost?: number;
+  compactionCountsBySession: Map<string, number>;
   onBadgeOut: (officeId: string) => void;
   onCloseShift: (officeId: string) => void;
 }
 
-export default function ShiftStatusBar({ shift, totalShiftCost, onBadgeOut, onCloseShift }: Props) {
+export default function ShiftStatusBar({ shift, totalShiftCost, compactionCountsBySession, onBadgeOut, onCloseShift }: Props) {
   const [secondsRemaining, setSecondsRemaining] = useState<number>(60);
 
   useEffect(() => {
@@ -74,6 +75,12 @@ export default function ShiftStatusBar({ shift, totalShiftCost, onBadgeOut, onCl
                 />
                 <span style={{ color: FUNCTIONAL_ROLE_COLORS[slot.functionalRole] }}>
                   {slot.name}
+                </span>
+                <span
+                  className="shift-agent-compaction"
+                  title={`Compactions: ${slot.sessionId ? (compactionCountsBySession.get(slot.sessionId) ?? 0) : 0}`}
+                >
+                  C{slot.sessionId ? (compactionCountsBySession.get(slot.sessionId) ?? 0) : 0}
                 </span>
                 {slot.retryCount != null && slot.retryCount > 0 && (
                   <span style={{ fontSize: 10, color: '#ff9e64', marginLeft: 4 }}>
